@@ -1166,7 +1166,7 @@ export class GlpiClient {
     searchtype: 'contains' | 'equals' | 'notequals' | 'lessthan' | 'morethan' | 'under' | 'notunder';
     value: string;
     link?: 'AND' | 'OR';
-  }>): Promise<any> {
+  }>, options: { limit?: number } = {}): Promise<any> {
     await this.ensureSession();
 
     const params = new URLSearchParams();
@@ -1178,6 +1178,10 @@ export class GlpiClient {
         params.append(`criteria[${i}][link]`, c.link);
       }
     });
+
+    // Aplica range para limitar o tamanho da resposta (padrão: 20 itens)
+    const limit = options.limit || 20;
+    params.append('range', `0-${limit - 1}`);
 
     const response = await fetch(
       `${this.config.url}/apirest.php/search/${itemtype}?${params.toString()}`,
@@ -1206,15 +1210,42 @@ export class GlpiClient {
   }> {
     await this.ensureSession();
 
-    const tickets = await this.getTickets({ range: '0-9999' });
+    // Usa a API de search com range=0-0 para obter apenas o totalcount por status,
+    // sem transferir dados dos tickets. Corrige bug em ambientes com >10.000 tickets,
+    // onde a abordagem anterior (range 0-9999) retornava apenas os tickets mais antigos
+    // (todos fechados), zerando as contagens de new/processing/pending/solved.
+    const countByStatus = async (status: number): Promise<number> => {
+      const params = new URLSearchParams();
+      params.append('criteria[0][field]', '12'); // campo 12 = status no GLPI
+      params.append('criteria[0][searchtype]', 'equals');
+      params.append('criteria[0][value]', status.toString());
+      params.append('range', '0-0');
+      const response = await fetch(
+        `${this.config.url}/apirest.php/search/Ticket?${params.toString()}`,
+        { method: 'GET', headers: this.getHeaders() }
+      );
+      if (!response.ok) return 0;
+      const data = await response.json();
+      return data.totalcount || 0;
+    };
+
+    const [newCount, assignedCount, plannedCount, pendingCount, solvedCount, closedCount] =
+      await Promise.all([
+        countByStatus(1), // New
+        countByStatus(2), // Processing (assigned)
+        countByStatus(3), // Processing (planned)
+        countByStatus(4), // Pending
+        countByStatus(5), // Solved
+        countByStatus(6), // Closed
+      ]);
 
     return {
-      total: tickets.length,
-      new: tickets.filter(t => t.status === 1).length,
-      processing: tickets.filter(t => t.status === 2 || t.status === 3).length,
-      pending: tickets.filter(t => t.status === 4).length,
-      solved: tickets.filter(t => t.status === 5).length,
-      closed: tickets.filter(t => t.status === 6).length,
+      total: newCount + assignedCount + plannedCount + pendingCount + solvedCount + closedCount,
+      new: newCount,
+      processing: assignedCount + plannedCount,
+      pending: pendingCount,
+      solved: solvedCount,
+      closed: closedCount,
     };
   }
 

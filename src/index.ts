@@ -995,19 +995,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ==================== TICKET TOOLS ====================
       case 'glpi_list_tickets': {
         const limit = (args?.limit as number) || 50;
-        const tickets = await glpiClient.getTickets({
-          range: `0-${limit - 1}`,
-          order: (args?.order as 'ASC' | 'DESC') || 'DESC',
-        });
+        const status = args?.status as number | undefined;
+        let formattedTickets: any[];
 
-        const formattedTickets = tickets.map((t: any) => ({
-          id: t.id,
-          name: t.name,
-          status: TICKET_STATUS[t.status] || t.status,
-          urgency: TICKET_URGENCY[t.urgency] || t.urgency,
-          date: t.date,
-          date_mod: t.date_mod,
-        }));
+        if (status !== undefined && status !== null) {
+          // Usa search para filtrar por status corretamente (campo 12 = status no GLPI).
+          // A API getItems não suporta filtro de status, então o parâmetro era silenciosamente ignorado.
+          const results = await glpiClient.search('Ticket', [
+            { field: 12, searchtype: 'equals', value: status.toString() }
+          ], { limit });
+
+          formattedTickets = (results.data || []).map((row: any) => ({
+            id: row['2'],
+            name: (row['1'] || '').replace(/^"|"$/g, ''),
+            status: TICKET_STATUS[row['12']] || row['12'],
+            urgency: TICKET_URGENCY[row['10']] || row['10'],
+            date: row['15'],
+            date_mod: row['19'],
+          }));
+        } else {
+          const tickets = await glpiClient.getTickets({
+            range: `0-${limit - 1}`,
+            order: (args?.order as 'ASC' | 'DESC') || 'DESC',
+          });
+
+          formattedTickets = tickets.map((t: any) => ({
+            id: t.id,
+            name: t.name,
+            status: TICKET_STATUS[t.status] || t.status,
+            urgency: TICKET_URGENCY[t.urgency] || t.urgency,
+            date: t.date,
+            date_mod: t.date_mod,
+          }));
+        }
 
         return {
           content: [{ type: 'text', text: JSON.stringify(formattedTickets, null, 2) }],
@@ -1970,6 +1990,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const field = args?.field as number;
         const searchtype = args?.searchtype as string;
         const value = args?.value as string;
+        const limit = (args?.limit as number) || 20; // Padrão 20 para evitar respostas massivas (>8MB)
 
         if (!itemtype || field === undefined || !searchtype || value === undefined) {
           throw new McpError(ErrorCode.InvalidParams, 'itemtype, field, searchtype, and value are required');
@@ -1977,10 +1998,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const results = await glpiClient.search(itemtype, [
           { field, searchtype: searchtype as any, value },
-        ]);
+        ], { limit });
 
         return {
-          content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify({
+            totalcount: results.totalcount,
+            count: results.count,
+            pagination: `Exibindo ${results.count || 0} de ${results.totalcount || 0} resultados (limit=${limit})`,
+            data: results.data,
+          }, null, 2) }],
         };
       }
 
