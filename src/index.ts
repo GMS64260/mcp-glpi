@@ -240,6 +240,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['ticket_id'],
         },
       },
+      {
+        name: 'glpi_get_ticket_solutions',
+        description: 'Get all solutions for a ticket',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ticket_id: { type: 'number', description: 'The ticket ID' },
+          },
+          required: ['ticket_id'],
+        },
+      },
 
       // ==================== PROBLEM TOOLS ====================
       {
@@ -1021,6 +1032,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const ticket = await glpiClient.getTicket(id);
         const followups = await glpiClient.getTicketFollowups(id);
         const tasks = await glpiClient.getTicketTasks(id);
+        const solutions = await glpiClient.getTicketSolutions(id);
 
         return {
           content: [{
@@ -1031,8 +1043,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               urgency_label: TICKET_URGENCY[ticket.urgency],
               followups_count: followups.length,
               tasks_count: tasks.length,
+              solutions_count: solutions.length,
               followups,
               tasks,
+              solutions,
             }, null, 2),
           }],
         };
@@ -1171,6 +1185,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [{ type: 'text', text: JSON.stringify(followups, null, 2) }],
+        };
+      }
+
+      case 'glpi_get_ticket_solutions': {
+        const ticketId = args?.ticket_id as number;
+        if (!ticketId) throw new McpError(ErrorCode.InvalidParams, 'ticket_id is required');
+
+        const solutions = await glpiClient.getTicketSolutions(ticketId);
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify(solutions, null, 2) }],
         };
       }
 

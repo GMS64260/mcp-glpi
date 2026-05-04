@@ -709,6 +709,21 @@ export class GlpiClient {
     return response.json() as Promise<any[]>;
   }
 
+  async getTicketSolutions(ticketId: number): Promise<any[]> {
+    await this.ensureSession();
+
+    const response = await fetch(`${this.config.url}/apirest.php/Ticket/${ticketId}/ITILSolution`, {
+      method: 'GET',
+      headers: this.getHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get solutions: ${response.status}`);
+    }
+
+    return response.json() as Promise<any[]>;
+  }
+
   async assignTicket(ticketId: number, options: {
     users_id?: number;
     groups_id?: number;
