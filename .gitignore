@@ -5,3 +5,7 @@ dist/
 .DS_Store
 *.tgz
 .npm/
+CLAUDE.md
+.claude/
+.codegraph
+plans/
