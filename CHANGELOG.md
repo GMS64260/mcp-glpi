@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.4.0 — 2026-10-14
+
+### Added
+
+- **Streamable HTTP transport** (`MCP_TRANSPORT=http`, or `--http`): the
+  server can now serve MCP over HTTP at `http://<host>:<port>/mcp` (JSON-RPC,
+  stateless, JSON responses) in addition to stdio. This is the only transport
+  Open WebUI supports ("MCP (Streamable HTTP)" under Admin Settings → External
+  Tools), so `mcp-glpi` can now be attached to it directly. The endpoint also
+  answers `GET /health` for liveness probes. stdio stays the default, so
+  existing Claude Desktop / Claude Code configs are unaffected.
+- CLI flags: `--http`, `--transport <stdio|http>`, `--host`, `--port`
+  (`0` picks a free port), `--path`, `--help`.
+- HTTP environment variables: `MCP_HTTP_HOST` (default `127.0.0.1`),
+  `MCP_HTTP_PORT` (falls back to `PORT`), `MCP_HTTP_PATH` (default `/mcp`),
+  `MCP_HTTP_AUTH_TOKEN` (optional `Authorization: Bearer` requirement),
+  `MCP_HTTP_ALLOWED_HOSTS` (Host-header allowlist).
+- Tests: `test/http-server.test.ts` covers transport configuration, the
+  JSON-RPC endpoint (initialize / tools/list / tools/call), HTTP edge cases
+  (405 on GET/DELETE, 404, malformed and oversize bodies), bearer auth and
+  Host-header validation.
+
+### Fixed
+
+- Concurrent requests no longer open duplicate GLPI sessions: `initSession()`
+  is now single-flight, so parallel calls share one session instead of each
+  opening — and leaking — their own. Matters as soon as several HTTP clients
+  (or one client issuing parallel tool calls) hit the server at once.
+
+### Changed
+
+- The MCP `serverInfo` version now reports the package version instead of the
+  stale hard-coded `3.0.0`.
+
 ## 3.3.0 — 2026-08-05
 
 ### Added
