@@ -62,6 +62,46 @@ test('request() re-authenticates on 401 and retries once', async () => {
   assert.equal(requestCalls, 2);
 });
 
+test('concurrent first requests open a single GLPI session', async () => {
+  let initCalls = 0;
+
+  installFetch(async (url) => {
+    if (url.endsWith('/initSession')) {
+      initCalls++;
+      // Hold the response open so all three requests race the init.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(JSON.stringify({ session_token: 'sess-shared' }), { status: 200 });
+    }
+    return new Response(JSON.stringify([]), { status: 200 });
+  });
+
+  const http = new GlpiHttp({ url: 'https://glpi.test', userToken: 'u' });
+  await Promise.all([http.request('Computer'), http.request('Computer'), http.request('Computer')]);
+
+  assert.equal(initCalls, 1, 'concurrent requests must share one session');
+  assert.equal(http.session, 'sess-shared');
+});
+
+test('a failed init is not cached, so the next request retries', async () => {
+  let initCalls = 0;
+
+  installFetch(async (url) => {
+    if (url.endsWith('/initSession')) {
+      initCalls++;
+      if (initCalls === 1) throw new Error('connection refused');
+      return new Response(JSON.stringify({ session_token: 'sess-2' }), { status: 200 });
+    }
+    return new Response(JSON.stringify([]), { status: 200 });
+  });
+
+  const http = new GlpiHttp({ url: 'https://glpi.test', userToken: 'u', maxRetries: 0 });
+  await assert.rejects(() => Promise.all([http.request('Computer'), http.request('Computer')]));
+
+  await http.request('Computer');
+  assert.equal(initCalls, 2);
+  assert.equal(http.session, 'sess-2');
+});
+
 test('5xx triggers retry with backoff', async () => {
   let attempts = 0;
 

@@ -85,6 +85,15 @@ function debugLog(message: string): void {
 export class GlpiHttp {
   readonly config: GlpiHttpConfig;
   private sessionToken: string | null = null;
+  /**
+   * In-flight `initSession`, if any.
+   *
+   * Callers can be concurrent (the HTTP transport serves one request per
+   * connection, and the GLPI client is shared process-wide), and without this
+   * each of them would open its own GLPI session and overwrite the token,
+   * leaking the sessions it abandoned.
+   */
+  private sessionInit: Promise<string> | null = null;
 
   constructor(config: GlpiHttpConfig) {
     this.config = {
@@ -101,6 +110,15 @@ export class GlpiHttp {
   }
 
   async initSession(): Promise<string> {
+    if (!this.sessionInit) {
+      this.sessionInit = this.requestNewSession().finally(() => {
+        this.sessionInit = null;
+      });
+    }
+    return this.sessionInit;
+  }
+
+  private async requestNewSession(): Promise<string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.config.appToken) headers['App-Token'] = this.config.appToken;
 
