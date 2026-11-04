@@ -1,6 +1,6 @@
 {
   "name": "mcp-glpi",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "MCP Server for GLPI - IT Service Management for Claude. Multi-criteria search, pagination, dynamic field resolution, ticket timeline, ITIL coverage (incidents, problems, changes, validations), asset CMDB, reporting.",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
