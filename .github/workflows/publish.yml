@@ -1,14 +1,18 @@
 # Publishes the package to npm when a GitHub release is published.
 #
-# Setup (repository owner, once):
-#   1. Create an npm "Automation" (or granular, publish-enabled) access token
-#      on npmjs.com for the mcp-glpi package.
-#   2. Store it as the repository secret NPM_TOKEN
-#      (Settings > Secrets and variables > Actions > New repository secret).
+# Authentication: npm trusted publishing (OIDC), no token stored in GitHub.
+# Setup (package owner, once, on npmjs.com):
+#   mcp-glpi > Settings > Trusted Publisher > GitHub Actions
+#     Organization or user: GMS64260
+#     Repository:           mcp-glpi
+#     Workflow filename:    publish.yml
+#     Environment:          (empty)
+# Trusted publishing needs npm >= 11.5.1, hence Node 24 below. Provenance is
+# generated automatically for a public repository.
 #
-# The release tag should match package.json "version" (e.g. v4.0.0).
-# --provenance links the published tarball to this workflow run; it needs
-# the id-token: write permission below and a public repository.
+# The release tag must match package.json "version" (v4.1.0 <-> 4.1.0).
+# When that version is already on npm (published by hand with `npm publish`),
+# the job stops there and succeeds instead of failing on a 403.
 name: Publish to npm
 
 on:
@@ -26,13 +30,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
-      # prepublishOnly runs build + lint + test again before the upload.
-      - run: npm publish --provenance --access public
+
+      - name: Check the tag against package.json and the registry
+        id: check
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::release tag $TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+          if npm view "mcp-glpi@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::mcp-glpi@$VERSION is already on npm, nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Node 24 ships npm 11; make sure it is recent enough for OIDC.
+      - if: steps.check.outputs.skip != 'true'
+        run: npm install -g npm@^11.5.1
+      - if: steps.check.outputs.skip != 'true'
+        run: npm ci
+      # prepublishOnly runs build + lint + test before the upload.
+      - if: steps.check.outputs.skip != 'true'
+        run: npm publish --access public
