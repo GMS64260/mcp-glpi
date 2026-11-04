@@ -426,6 +426,13 @@ export interface GetOptions {
   with_disks?: boolean;
 }
 
+/** One ProjectState row. */
+export interface ProjectState {
+  id: number;
+  name: string;
+  is_finished: boolean;
+}
+
 // ============================================================================
 // CLIENT
 // ============================================================================
@@ -1148,6 +1155,26 @@ export class GlpiClient {
   async getProject(id: number, options: GetOptions = {}) { return this.getItem<GlpiProject>('Project', id, options); }
   async createProject(project: Record<string, unknown>) { return this.createItem('Project', project); }
   async updateProject(id: number, updates: Partial<GlpiProject>) { return this.updateItem('Project', id, updates); }
+
+  private projectStates?: { at: number; states: Promise<ProjectState[]> };
+
+  /**
+   * ProjectState dropdown (name, is_finished), cached one minute: project and
+   * task states are not fixed codes like ITIL statuses, and a client needs
+   * `is_finished` to tell open projects from finished ones.
+   */
+  async getProjectStates(): Promise<ProjectState[]> {
+    const cached = this.projectStates;
+    if (cached && Date.now() - cached.at < 60_000) return cached.states;
+    const states = this.getItems<Record<string, unknown>>('ProjectState', { range: '0-499', expand_dropdowns: false }).then((rows) =>
+      rows.map((r) => ({ id: Number(r.id), name: String(r.name ?? ''), is_finished: Number(r.is_finished) === 1 }))
+    );
+    this.projectStates = { at: Date.now(), states };
+    states.catch(() => {
+      if (this.projectStates?.states === states) this.projectStates = undefined;
+    });
+    return states;
+  }
 
   async getDocuments(options: ListOptions = {}) { return this.getItems<GlpiDocument>('Document', options); }
   async getDocument(id: number, options: GetOptions = {}) { return this.getItem<GlpiDocument>('Document', id, options); }

@@ -259,6 +259,31 @@ async function main() {
     const r = await call('glpi_tickets_stats_by', {});
     return `total=${r.total}`;
   });
+  // Projects (#14): states, then the first project with every section.
+  let projectId: number | undefined;
+  await check('glpi_list_items Project (state labels)', async () => {
+    const r = await call('glpi_list_items', { itemtype: 'Project', limit: 3 });
+    projectId = r.items[0]?.id;
+    const first = r.items[0];
+    if (first && !('state_is_finished' in first)) throw new Error('no state_is_finished on Project rows');
+    return `totalcount=${r.totalcount}${first ? `, first state=${JSON.stringify(first.state)}` : ''}`;
+  });
+  await check('glpi_list_items ProjectState', async () => {
+    const r = await call('glpi_list_items', { itemtype: 'ProjectState' });
+    return `${r.totalcount} states, finished: ${r.items.filter((s: { is_finished: number }) => s.is_finished).map((s: { name: string }) => s.name).join(', ') || 'none'}`;
+  });
+  if (projectId !== undefined) {
+    await check(`glpi_get_item Project ${projectId} with every section`, async () => {
+      const r = await call('glpi_get_item', {
+        itemtype: 'Project',
+        id: projectId,
+        with: ['task_details', 'team', 'tickets', 'changes', 'problems', 'costs', 'items', 'subprojects', 'documents'],
+      });
+      if (!r.counts) throw new Error('no counts');
+      const sections = Object.keys(r).filter((k) => k.startsWith('_') && k !== '_errors');
+      return `counts=${JSON.stringify(r.counts)}, sections=${sections.join(',')}${r._errors ? `, errors=${JSON.stringify(r._errors)}` : ''}`;
+    });
+  }
   await check('glpi_get_session_info', async () => {
     const r = await call('glpi_get_session_info', {});
     return `me=${r.me?.name ?? '?'}, profile=${r.active_profile?.name ?? '?'}, ${r.entities?.length ?? 0} entities`;
