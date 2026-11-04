@@ -6,10 +6,9 @@
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { parseGlpiConfig } from './config.js';
+import { ConfigError, parseGlpiConfig } from './config.js';
 import { GlpiClient } from './glpi-client.js';
 import {
-  ConfigError,
   HttpTransportConfig,
   USAGE,
   parseTransportConfig,
@@ -91,18 +90,19 @@ async function main() {
     }
 
     let transportConfig;
+    let config;
     try {
       transportConfig = parseTransportConfig(argv, process.env);
+      config = parseGlpiConfig(process.env);
+      serverOptions = parseServerOptions(process.env);
     } catch (error) {
       if (error instanceof ConfigError) {
-        console.error(`Configuration error: ${error.message}\n\n${USAGE}`);
+        console.error(`Configuration error: ${error.message}\n\nRun mcp-glpi --help for the options and environment variables.`);
         process.exit(2);
       }
       throw error;
     }
 
-    const config = parseGlpiConfig(process.env);
-    serverOptions = parseServerOptions(process.env);
     const promptNote = promptStartupNote(serverOptions);
     if (promptNote) console.error(promptNote);
     client = new GlpiClient(config);
@@ -128,7 +128,9 @@ async function main() {
     process.on('SIGINT', () => void shutdown('SIGINT'));
     process.on('SIGTERM', () => void shutdown('SIGTERM'));
   } catch (error) {
-    console.error('Failed to start server:', error);
+    // The stack only helps when debugging the server itself.
+    const detail = process.env.GLPI_DEBUG || !(error instanceof Error) ? error : error.message;
+    console.error('Failed to start server:', detail);
     process.exit(1);
   }
 }

@@ -4,7 +4,8 @@
 
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { parseGlpiConfig } from '../src/config.js';
+import { ConfigError, parseGlpiConfig } from '../src/config.js';
+import { ConfigError as HttpConfigError } from '../src/http-server.js';
 
 const base = { GLPI_URL: 'https://glpi.test', GLPI_USER_TOKEN: 'u' };
 
@@ -34,4 +35,12 @@ test('URL and authentication are required', () => {
   assert.throws(() => parseGlpiConfig({ GLPI_URL: base.GLPI_URL }), /No authentication configured/);
   const basic = parseGlpiConfig({ GLPI_URL: base.GLPI_URL, GLPI_USERNAME: 'a', GLPI_PASSWORD: 'b' });
   assert.equal(basic.username, 'a');
+});
+
+test('configuration errors are ConfigError (the CLI prints them without a stack trace)', () => {
+  assert.throws(() => parseGlpiConfig({ ...base, GLPI_TIMEOUT_MS: 'abc' }), ConfigError);
+  assert.throws(() => parseGlpiConfig({ GLPI_USER_TOKEN: 'u' }), ConfigError);
+  assert.throws(() => parseGlpiConfig({ GLPI_URL: base.GLPI_URL }), ConfigError);
+  // One class for the environment and the command line.
+  assert.equal(HttpConfigError, ConfigError);
 });
