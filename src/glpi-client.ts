@@ -435,8 +435,17 @@ export class GlpiClient {
   readonly search: GlpiSearch;
   readonly searchOptions: SearchOptionsCache;
 
+  /**
+   * Profile and entity chosen through changeActiveProfile /
+   * changeActiveEntities, restored on every new GLPI session (expired
+   * session, or one renewed after a stale ERROR_RIGHT_MISSING).
+   */
+  private activeProfileId?: number;
+  private activeEntity?: { id: number | 'all'; isRecursive: boolean };
+
   constructor(config: GlpiConfig) {
     this.http = new GlpiHttp(config);
+    this.http.onSessionStart = (token) => this.restoreSessionContext(token);
     this.searchOptions = new SearchOptionsCache(this.http);
     // Search rows come back keyed by readable names (see mapRowKeys).
     this.search = new GlpiSearch(this.http, this.searchOptions);
@@ -1404,6 +1413,7 @@ export class GlpiClient {
       method: 'POST',
       json: { entities_id: entitiesId, is_recursive: isRecursive },
     });
+    this.activeEntity = { id: entitiesId, isRecursive };
   }
 
   /** Switch the active profile of the (process-wide) session. */
@@ -1412,5 +1422,32 @@ export class GlpiClient {
       method: 'POST',
       json: { profiles_id: profilesId },
     });
+    this.activeProfileId = profilesId;
+    // GLPI resets the active entities when the profile changes.
+    this.activeEntity = undefined;
+  }
+
+  /**
+   * Re-apply the chosen profile, then entity, to a new session. Sent with the
+   * new token explicitly (noSession): this runs inside initSession, so the
+   * calls must not wait for a session or trigger another re-authentication.
+   */
+  private async restoreSessionContext(token: string): Promise<void> {
+    if (this.activeProfileId !== undefined) {
+      await this.http.request('changeActiveProfile', {
+        method: 'POST',
+        json: { profiles_id: this.activeProfileId },
+        noSession: true,
+        sessionToken: token,
+      });
+    }
+    if (this.activeEntity) {
+      await this.http.request('changeActiveEntities', {
+        method: 'POST',
+        json: { entities_id: this.activeEntity.id, is_recursive: this.activeEntity.isRecursive },
+        noSession: true,
+        sessionToken: token,
+      });
+    }
   }
 }

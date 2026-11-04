@@ -3,6 +3,13 @@
  *
  * - Single `request()` entry point used by every domain call.
  * - Auto re-authentication on 401 (expired session_token).
+ * - Session renewal on a 403 ERROR_RIGHT_MISSING read: GLPI computes the
+ *   session's entity scope at login, so an entity created afterwards stays
+ *   out of reach until a new session is opened (issue #13). At most one
+ *   renewal per `rightsRefreshIntervalMs`, so a real missing right does not
+ *   open a session per call.
+ * - `onSessionStart` runs on every new session (first login, renewal), so the
+ *   client can restore the active profile and entity it had chosen.
  * - Structured errors with HTTP status, GLPI error code/message, and full body.
  * - Retries: GET is retried after a network error, a timeout or a 5xx.
  *   POST/PUT/DELETE are retried only after a connection-level error raised
@@ -26,7 +33,15 @@ export interface GlpiHttpConfig {
   timeoutMs?: number;
   /** Max concurrent in-flight GLPI calls (default env GLPI_MAX_CONCURRENCY or 8). */
   maxConcurrency?: number;
+  /**
+   * Minimum age of the session before a 403 ERROR_RIGHT_MISSING on a read
+   * renews it (default 60000 ms; 0 renews on every such 403).
+   */
+  rightsRefreshIntervalMs?: number;
 }
+
+/** Called with the new token right after `initSession`, before any caller uses it. */
+export type SessionStartHook = (sessionToken: string) => Promise<void>;
 
 /** Upper bound of any retry delay (backoff or Retry-After). */
 export const MAX_RETRY_DELAY_MS = 30_000;
@@ -172,6 +187,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** GLPI error code of an error body (`["ERROR_CODE", "message"]`). */
+export function glpiErrorCode(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body);
+    return Array.isArray(parsed) && typeof parsed[0] === 'string' ? parsed[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseJson<T>(text: string): T {
   if (!text) return undefined as unknown as T;
   try {
@@ -200,13 +225,18 @@ export class GlpiHttp {
    * leaking the sessions it abandoned.
    */
   private sessionInit: Promise<string> | null = null;
+  /** When the current session was opened (ms epoch), 0 before the first one. */
+  private sessionStartedAt = 0;
   private readonly slots: Semaphore;
+  /** See `SessionStartHook`; set by GlpiClient. */
+  onSessionStart?: SessionStartHook;
 
   constructor(config: GlpiHttpConfig) {
     this.config = {
       maxRetries: 2,
       retryBaseDelayMs: 300,
       timeoutMs: 15000,
+      rightsRefreshIntervalMs: 60_000,
       ...config,
       url: config.url.replace(/\/$/, ''),
     };
@@ -260,7 +290,30 @@ export class GlpiHttp {
       throw new Error(`GLPI initSession returned no session_token (HTTP ${response.status}): ${body.slice(0, 200)}`);
     }
     this.sessionToken = token;
+    this.sessionStartedAt = Date.now();
+    if (this.onSessionStart) {
+      try {
+        await this.onSessionStart(token);
+      } catch (err) {
+        // The session works, only the restored context is missing: say so, go on.
+        console.error(`Warning: could not restore the session context: ${err instanceof Error ? err.message : err}`);
+      }
+    }
     return token;
+  }
+
+  /**
+   * Replace the session `usedToken` with a new one, unless another caller
+   * already did. The old session is closed in the background.
+   */
+  private async renewSession(usedToken: string | undefined): Promise<void> {
+    if (this.sessionToken === usedToken) {
+      this.sessionToken = null;
+      if (usedToken) {
+        void this.request('killSession', { noSession: true, sessionToken: usedToken }).catch(() => undefined);
+      }
+    }
+    if (!this.sessionToken) await this.initSession();
   }
 
   /**
@@ -339,6 +392,7 @@ export class GlpiHttp {
     const baseDelay = this.config.retryBaseDelayMs ?? 300;
     let attempt = 0;
     let reauthAttempted = false;
+    let rightsRetried = false;
 
     for (;;) {
       // Token actually sent with this attempt (for the concurrent-401 guard).
@@ -377,6 +431,29 @@ export class GlpiHttp {
         if (!this.sessionToken) await this.initSession();
         if (this.sessionToken) headers['Session-Token'] = this.sessionToken;
         continue;
+      }
+
+      // 403 ERROR_RIGHT_MISSING on a read -> the session's entity scope may
+      // be stale (entity created after login, issue #13). Retry once with a
+      // newer session: one another caller opened, or a new one if ours is
+      // old enough. Writes are not retried: GLPI checks their rights the same
+      // way, but replaying a write is never automatic here.
+      if (
+        response.status === 403 &&
+        idempotent &&
+        !rightsRetried &&
+        !options.noSession &&
+        glpiErrorCode(body) === 'ERROR_RIGHT_MISSING'
+      ) {
+        rightsRetried = true;
+        const renewedMeanwhile = this.sessionToken !== null && this.sessionToken !== usedToken;
+        const age = Date.now() - this.sessionStartedAt;
+        if (renewedMeanwhile || age >= (this.config.rightsRefreshIntervalMs ?? 60_000)) {
+          if (!renewedMeanwhile) debugLog(`${method} ${path} -> 403 ERROR_RIGHT_MISSING, renewing the session`);
+          await this.renewSession(usedToken);
+          if (this.sessionToken) headers['Session-Token'] = this.sessionToken;
+          continue;
+        }
       }
 
       // 429 -> honour Retry-After (capped), else exponential backoff. Every
