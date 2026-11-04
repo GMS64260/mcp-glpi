@@ -8,8 +8,10 @@
  *   - Templates: `glpi://ticket/{id}` (ticket + last timeline entries),
  *     `glpi://kb/{id}` (article as plain text), `glpi://user/{id}`.
  *
- * The ticket lists need the `tickets` toolset, the problem and change lists
- * the `itil` toolset (GLPI_TOOLSETS); the others are always registered.
+ * Each resource follows the toolset that holds the matching tools
+ * (GLPI_TOOLSETS): ticket lists and `glpi://ticket/{id}` need `tickets`,
+ * problem and change lists `itil`, `glpi://kb/{id}` `kb`, `glpi://user/{id}`
+ * `users`; the others are always registered.
  * The resource lists never change at runtime: `listChanged: false`.
  */
 
@@ -179,6 +181,8 @@ interface TemplateDef {
   title: string;
   uriTemplate: string;
   description: string;
+  /** Registered only when this toolset is enabled. */
+  toolset: Toolset;
   read: (client: GlpiClient, id: number) => Promise<unknown>;
 }
 
@@ -188,6 +192,7 @@ export const RESOURCE_TEMPLATES: readonly TemplateDef[] = [
     title: 'Ticket',
     uriTemplate: 'glpi://ticket/{id}',
     description: `One ticket: compact fields with status_label, plain-text content, and its last ${TICKET_RESOURCE_TIMELINE} timeline entries (followups, tasks, solutions, validations; text truncated)`,
+    toolset: 'tickets',
     read: readTicketResource,
   },
   {
@@ -195,6 +200,7 @@ export const RESOURCE_TEMPLATES: readonly TemplateDef[] = [
     title: 'Knowledge base article',
     uriTemplate: 'glpi://kb/{id}',
     description: 'One knowledge base article (KnowbaseItem), answer converted from HTML to plain text',
+    toolset: 'kb',
     read: async (client, id) => compactItem('KnowbaseItem', await client.getKnowbaseItem(id), { max_content_chars: KB_RESOURCE_CHARS }),
   },
   {
@@ -202,6 +208,7 @@ export const RESOURCE_TEMPLATES: readonly TemplateDef[] = [
     title: 'User',
     uriTemplate: 'glpi://user/{id}',
     description: 'One user: login, names, phones, entity, profile, location, last login',
+    toolset: 'users',
     read: async (client, id) => compactItem('User', await client.getUser(id)),
   },
 ];
@@ -224,6 +231,7 @@ export function registerResources(server: McpServer, client: GlpiClient, options
     );
   }
   for (const t of RESOURCE_TEMPLATES) {
+    if (options.toolsets && !options.toolsets.has(t.toolset)) continue;
     server.registerResource(
       t.name,
       new ResourceTemplate(t.uriTemplate, { list: undefined }),

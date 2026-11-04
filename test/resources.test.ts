@@ -167,7 +167,7 @@ test('glpi://tickets/open uses status notold and returns the list envelope; comp
   assert.deepEqual(computers.items[0], { id: 1, name: 'PC-1', serial: 'S', computertypes_id: 'Laptop' });
 });
 
-test('ticket, problem and change list resources follow GLPI_TOOLSETS', async () => {
+test('resources and resource templates follow GLPI_TOOLSETS', async () => {
   const uris = async (env: Record<string, string>) => {
     const glpi = new GlpiClient({ url: 'https://glpi.test', userToken: 'u', maxRetries: 0 });
     const server = createMcpServer({ client: glpi, options: parseRegistryOptions(env) });
@@ -177,7 +177,7 @@ test('ticket, problem and change list resources follow GLPI_TOOLSETS', async () 
     const { resources } = await client.listResources();
     const { resourceTemplates } = await client.listResourceTemplates();
     await client.close();
-    return { fixed: resources.map((r) => r.uri).sort(), templates: resourceTemplates.length };
+    return { fixed: resources.map((r) => r.uri).sort(), templates: resourceTemplates.map((t) => t.uriTemplate).sort() };
   };
   const all = await uris({});
   assert.ok(['glpi://tickets/open', 'glpi://tickets/recent', 'glpi://problems/open', 'glpi://changes/pending'].every((u) => all.fixed.includes(u)));
@@ -185,11 +185,15 @@ test('ticket, problem and change list resources follow GLPI_TOOLSETS', async () 
   const assets = await uris({ GLPI_TOOLSETS: 'assets' });
   assert.ok(!assets.fixed.some((u) => /^glpi:\/\/(tickets|problems|changes)\//.test(u)), assets.fixed.join(' '));
   assert.ok(assets.fixed.includes('glpi://computers'));
-  assert.equal(assets.templates, all.templates);
+  assert.deepEqual(all.templates, ['glpi://kb/{id}', 'glpi://ticket/{id}', 'glpi://user/{id}']);
+  // Each template needs the toolset of its tools (tickets, kb, users).
+  assert.deepEqual(assets.templates, []);
 
   const tickets = await uris({ GLPI_TOOLSETS: 'tickets' });
   assert.ok(tickets.fixed.includes('glpi://tickets/open') && tickets.fixed.includes('glpi://tickets/recent'));
   assert.ok(!tickets.fixed.includes('glpi://problems/open') && !tickets.fixed.includes('glpi://changes/pending'));
+  assert.deepEqual(tickets.templates, ['glpi://ticket/{id}']);
+  assert.deepEqual((await uris({ GLPI_TOOLSETS: 'kb,users' })).templates, ['glpi://kb/{id}', 'glpi://user/{id}']);
 
   const itil = await uris({ GLPI_TOOLSETS: 'itil', GLPI_READ_ONLY: '1' });
   assert.ok(itil.fixed.includes('glpi://problems/open') && itil.fixed.includes('glpi://changes/pending'));
