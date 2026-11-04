@@ -17,7 +17,7 @@ import { TICKET_TOOLS } from './tools/tickets.js';
 import { USER_TOOLS } from './tools/users.js';
 
 /** Keep in sync with package.json (a test checks it). */
-export const SERVER_VERSION = '4.0.0';
+export const SERVER_VERSION = '4.1.0';
 
 export type ServerOptions = RegistryOptions;
 export const parseServerOptions = parseRegistryOptions;

@@ -63,7 +63,9 @@ const LOOPBACK_BIND_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '
 const DOCKER_HOST_ALIAS = 'host.docker.internal';
 const LOOPBACK_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', DOCKER_HOST_ALIAS];
 
-export class ConfigError extends Error {}
+import { ConfigError } from './config.js';
+
+export { ConfigError };
 
 export const USAGE = `Usage: mcp-glpi [options]
 

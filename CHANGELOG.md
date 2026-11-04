@@ -1,5 +1,62 @@
 # Changelog
 
+## 4.1.0 — 2026-11-04
+
+Projects become readable and writable below the header, a stale entity scope
+no longer needs a restart, and a few loose ends of 4.0.0 are tied. No new
+tool: the listed catalogue stays at 46 tools (25,572 characters; 12,995 with
+`GLPI_READ_ONLY=1`).
+
+### Added
+
+- **Projects (#14).** `glpi_get_item` on a `Project` takes the `with` values
+  `tasks`, `task_details` (each task with its team and tickets), `team`,
+  `tickets` / `changes` / `problems` (linked through `Itil_Project`, with
+  name and `status_label`), `costs`, `items`, `subprojects`, and always
+  returns `counts` (`tasks`, `team`, `itil`, `open_tasks` when the tasks are
+  read). On a `ProjectTask`, `with` takes `team` and `tickets`. A section
+  GLPI refuses is reported under `_errors` instead of an empty list, so "no
+  tasks" and "not allowed to see them" no longer look the same.
+- **Project states.** `Project` and `ProjectTask` rows (list and detail)
+  carry `state` (the `ProjectState` name) and `state_is_finished`.
+- **New itemtypes.** `ProjectTask` and `ProjectState` in the generic item
+  tools; the write tools also take the links `ProjectTeam`,
+  `ProjectTaskTeam`, `Itil_Project` and `ProjectTask_Ticket` (create,
+  delete). `glpi_create_item` checks the fields GLPI needs for them
+  (`projects_id` for a task, the two ends of a link).
+- **Created where?** `glpi_create_item` without `entities_id` returns the
+  entity the item landed in (`entities_id`), since GLPI silently uses the
+  active entity.
+
+### Changed
+
+- `glpi_update_item` on a `Project` also accepts `code`, `comment`,
+  `priority`, `projectstates_id`, `projecttypes_id`, `projects_id`,
+  `auto_percent_done`, `plan_start_date`, `plan_end_date`, `users_id`,
+  `groups_id`, `entities_id`, `is_recursive`; on a `ProjectTask`, the task
+  fields (state, type, parent, percent done, dates, durations, milestone).
+  Links cannot be updated: delete and create again.
+- Resource templates follow `GLPI_TOOLSETS` like the fixed resources:
+  `glpi://ticket/{id}` needs `tickets`, `glpi://kb/{id}` `kb`,
+  `glpi://user/{id}` `users`.
+- `publish.yml` uses npm trusted publishing (OIDC) instead of an
+  `NPM_TOKEN` secret, checks the release tag against `package.json`, and
+  succeeds without publishing when the version is already on npm.
+
+### Fixed
+
+- **Entities created after startup (#13).** GLPI computes a session's
+  entities at login, so a newer entity answered `403 ERROR_RIGHT_MISSING`
+  until the process restarted. A read refused that way is now replayed once
+  on a new session when the current one is older than a minute (the old one
+  is closed); writes are never replayed, and a younger session keeps the 403.
+- The active profile and entity chosen with `glpi_set_active_profile` /
+  `glpi_set_active_entity` were lost when the session was re-opened after a
+  401; every new session now gets them back.
+- An invalid environment value or option prints one `Configuration error:`
+  line and exits with status 2, without a stack trace (set `GLPI_DEBUG` for
+  the trace of other startup failures).
+
 ## 4.0.0 — 2026-10-21
 
 A smaller, stricter tool catalogue with compact outputs, prompts and resource

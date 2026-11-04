@@ -10,7 +10,7 @@ reporting. Outputs are compact JSON built for a model's context window, write
 tools are annotated and can be switched off with one variable, and the 50
 tool names of v3 keep working as hidden aliases.
 
-Version 4.0.0. See [CHANGELOG.md](./CHANGELOG.md) for the release notes and
+Version 4.1.0. See [CHANGELOG.md](./CHANGELOG.md) for the release notes and
 [Upgrading from 3.x](#upgrading-from-3x) below.
 
 ## Install and configure
@@ -144,6 +144,18 @@ method and honours `Retry-After`. Delays grow exponentially from 300 ms, are
 capped at 30 s and get ±20 % jitter. An expired session (401) is re-opened
 once and the call replayed.
 
+GLPI computes a session's entities when it opens, so an entity created later
+stays out of reach (`403 ERROR_RIGHT_MISSING`) until a new session. A read
+refused that way is replayed once on a new session when the current one is
+older than a minute; a younger session keeps the 403 (a real missing right
+does not open a session per call), and writes are never replayed. Every new
+session, after a 401 or this renewal, gets back the profile and entity chosen
+with `glpi_set_active_profile` / `glpi_set_active_entity`.
+
+A configuration error (missing `GLPI_URL`, non-numeric `GLPI_TIMEOUT_MS`,
+unknown option...) prints one `Configuration error:` line and exits with
+status 2; set `GLPI_DEBUG` for the stack trace of other startup failures.
+
 ## Tool catalogue
 
 46 tools in 9 toolsets: `core`, `tickets`, `itil`, `assets`, `users`,
@@ -208,21 +220,61 @@ and solutions go through the ticket tools with `itemtype`.
 
 ### `core` (2) and `assets` (3): generic item tools
 
-These work on 24 itemtypes: `Computer`, `Software`, `NetworkEquipment`,
+These work on 26 itemtypes: `Computer`, `Software`, `NetworkEquipment`,
 `Printer`, `Monitor`, `Phone`, `Peripheral`, `Rack`, `Enclosure`, `PDU`,
 `KnowbaseItem`, `Contract`, `Supplier`, `Location`, `Entity`, `Project`,
 `Document`, `Group`, `ITILCategory`, `Ticket`, `Problem`, `Change`, `User`,
-`Profile`.
+`Profile`, `ProjectTask`, `ProjectState`. The write tools also take the
+project links `ProjectTeam`, `ProjectTaskTeam`, `Itil_Project` and
+`ProjectTask_Ticket` (create and delete; read them with `glpi_get_item`
+`with`).
 
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
 | `glpi_list_items` | core | `itemtype`, paging, `sort`, `order`, `search_text`, `is_deleted`, `expand_dropdowns`, `fields`, `verbose` | Compact rows of one itemtype; `search_text` = `{column: "substring"}`, `"^x$"` for exact |
-| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs` |
-| `glpi_create_item` | W | `itemtype`, `input` | Create from GLPI column values, e.g. `{"name":"PC-42","locations_id":3}` |
-| `glpi_update_item` | W | `itemtype`, `id`, `input` | Change the given columns; `Computer` and `Project` accept only their usual fields, `Ticket` / `Problem` / `Change` exactly those of `glpi_update_ticket` / `glpi_update_problem` / `glpi_update_change` |
+| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, and the project sections below |
+| `glpi_create_item` | W | `itemtype`, `input` | Create from GLPI column values, e.g. `{"name":"PC-42","locations_id":3}`. Without `entities_id` the item lands in the active entity, and the result names it (`entities_id`) |
+| `glpi_update_item` | W | `itemtype`, `id`, `input` | Change the given columns; `Computer`, `Project` and `ProjectTask` accept only their usual fields, `Ticket` / `Problem` / `Change` exactly those of `glpi_update_ticket` / `glpi_update_problem` / `glpi_update_change`; links cannot be updated (delete, then create) |
 | `glpi_delete_item` | W | `itemtype`, `id`, `purge`, `confirm_id` | Trash, or purge with `confirm_id` = `id` |
 
 `input` never accepts `password` / `password2` for `User`.
+
+**Projects.** `Project` and `ProjectTask` rows carry `state` (the
+`ProjectState` name) and `state_is_finished`, so open projects can be told
+from finished ones (`glpi_list_items {itemtype: "ProjectState"}` lists the
+states). On a `Project`, `glpi_get_item` always adds `counts` (`tasks`,
+`team`, `itil`, plus `open_tasks` when the tasks are read) and `with` takes:
+
+| `with` | Key | Content |
+|---|---|---|
+| `tasks` | `_tasks` | Tasks: state, parent task (`projecttasks_id`), percent done, planned and real dates, durations (seconds), milestone, plain-text content |
+| `task_details` | `_tasks` | The tasks, each with its `team` and `tickets` (first 50 tasks, two GLPI calls per task) |
+| `team` | `_team` | Team members: `itemtype` (`User`, `Group`, `Supplier`, `Contact`), `items_id`, name |
+| `tickets`, `changes`, `problems` | `_tickets`... | Linked ITIL items (`Itil_Project`) with name, `status`, `status_label` |
+| `costs` | `_costs` | Costs |
+| `items` | `_items` | Linked assets (`Item_Project`) with name |
+| `subprojects` | `_subprojects` | Child projects with their state |
+| `documents` | `_documents` | GLPI's own `with_documents` |
+
+On a `ProjectTask`, `with` takes `team` and `tickets`. A section GLPI
+refuses (`403 ERROR_RIGHT_MISSING`, e.g. a profile that only sees its own
+tasks) is reported in `_errors` instead of coming back as an empty list.
+
+Writes: `glpi_create_item {itemtype: "ProjectTask", input: {projects_id, name,
+...}}` (GLPI puts the task in its project's entity); team members with
+`ProjectTeam` / `ProjectTaskTeam` (`{projects_id or projecttasks_id,
+itemtype: "User", items_id}`); links with `Itil_Project`
+(`{projects_id, itemtype: "Ticket", items_id}`) and `ProjectTask_Ticket`
+(`{projecttasks_id, tickets_id}`). `glpi_update_item` on a `Project` accepts
+`name`, `code`, `content`, `comment`, `priority`, `projectstates_id`,
+`projecttypes_id`, `projects_id`, `percent_done`, `auto_percent_done`,
+`plan_start_date`, `plan_end_date`, `real_start_date`, `real_end_date`,
+`users_id`, `groups_id`, `entities_id`, `is_recursive`; with
+`auto_percent_done = 1`, GLPI computes `percent_done` from the tasks and
+overwrites a manual value. On a `ProjectTask`: `name`, `content`, `comment`,
+`projectstates_id`, `projecttasktypes_id`, `projecttasks_id`,
+`percent_done`, the four dates, `planned_duration`, `effective_duration`,
+`is_milestone`, `users_id`.
 
 ### `users` (3), `admin` (2), `session` (2)
 
@@ -347,8 +399,11 @@ stderr line at startup.
 | `my_open_tickets` | none | Open tickets assigned to the connected account (`assigned_user_id: "me"`), overdue first, with the three to handle next |
 
 **Resources** (read-only, `application/json`, same conventions as the tools).
-`glpi://tickets/*` need the `tickets` toolset and `glpi://problems/open` /
-`glpi://changes/pending` the `itil` toolset; the others are always there:
+Each follows the toolset of the matching tools (`GLPI_TOOLSETS`):
+`glpi://tickets/*` and `glpi://ticket/{id}` need `tickets`,
+`glpi://problems/open` and `glpi://changes/pending` need `itil`,
+`glpi://kb/{id}` needs `kb` and `glpi://user/{id}` needs `users`; the others
+are always there:
 
 | URI | Content |
 |---|---|
@@ -556,17 +611,20 @@ npm start            # node dist/index.js (stdio); npm start -- --http for HTTP
 ```
 
 `npm run measure` builds the catalogue in-process and prints its size, the
-largest tools and where the characters go. Today: 46 tools, 25,287
-characters (about 7.0k tokens); 23 tools and 12,844 characters with
+largest tools and where the characters go. Today: 46 tools, 25,572
+characters (about 7.1k tokens); 23 tools and 12,995 characters with
 `GLPI_READ_ONLY=1`; instructions 2,458 characters. `test/server.test.ts` pins
 the ceilings.
 
 CI (`.github/workflows/ci.yml`) builds, lints and tests on Node 20 and 22,
 and checks the catalogue ceilings. Publishing (`publish.yml`) runs when a
-GitHub release is published: it builds, tests and runs
-`npm publish --provenance` with the `NPM_TOKEN` repository secret; the
-release tag should match the `package.json` version. `prepublishOnly` runs
-build, lint and tests again. The tarball holds `dist/` (no source maps),
+GitHub release is published and uses npm trusted publishing (OIDC, no token
+stored in GitHub; provenance is automatic): the package owner registers the
+workflow once on npmjs.com (package **Settings > Trusted Publisher > GitHub
+Actions**, repository `GMS64260/mcp-glpi`, workflow `publish.yml`). The job
+fails when the release tag does not match the `package.json` version, and
+stops, successfully, when that version is already on npm (published by hand
+with `npm publish`). `prepublishOnly` runs build, lint and tests. The tarball holds `dist/` (no source maps),
 `README.md`, `CHANGELOG.md` and `LICENSE`.
 
 `npm run smoke` runs read-only checks against a real GLPI, reading

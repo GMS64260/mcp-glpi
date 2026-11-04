@@ -426,6 +426,13 @@ export interface GetOptions {
   with_disks?: boolean;
 }
 
+/** One ProjectState row. */
+export interface ProjectState {
+  id: number;
+  name: string;
+  is_finished: boolean;
+}
+
 // ============================================================================
 // CLIENT
 // ============================================================================
@@ -435,8 +442,17 @@ export class GlpiClient {
   readonly search: GlpiSearch;
   readonly searchOptions: SearchOptionsCache;
 
+  /**
+   * Profile and entity chosen through changeActiveProfile /
+   * changeActiveEntities, restored on every new GLPI session (expired
+   * session, or one renewed after a stale ERROR_RIGHT_MISSING).
+   */
+  private activeProfileId?: number;
+  private activeEntity?: { id: number | 'all'; isRecursive: boolean };
+
   constructor(config: GlpiConfig) {
     this.http = new GlpiHttp(config);
+    this.http.onSessionStart = (token) => this.restoreSessionContext(token);
     this.searchOptions = new SearchOptionsCache(this.http);
     // Search rows come back keyed by readable names (see mapRowKeys).
     this.search = new GlpiSearch(this.http, this.searchOptions);
@@ -1140,6 +1156,26 @@ export class GlpiClient {
   async createProject(project: Record<string, unknown>) { return this.createItem('Project', project); }
   async updateProject(id: number, updates: Partial<GlpiProject>) { return this.updateItem('Project', id, updates); }
 
+  private projectStates?: { at: number; states: Promise<ProjectState[]> };
+
+  /**
+   * ProjectState dropdown (name, is_finished), cached one minute: project and
+   * task states are not fixed codes like ITIL statuses, and a client needs
+   * `is_finished` to tell open projects from finished ones.
+   */
+  async getProjectStates(): Promise<ProjectState[]> {
+    const cached = this.projectStates;
+    if (cached && Date.now() - cached.at < 60_000) return cached.states;
+    const states = this.getItems<Record<string, unknown>>('ProjectState', { range: '0-499', expand_dropdowns: false }).then((rows) =>
+      rows.map((r) => ({ id: Number(r.id), name: String(r.name ?? ''), is_finished: Number(r.is_finished) === 1 }))
+    );
+    this.projectStates = { at: Date.now(), states };
+    states.catch(() => {
+      if (this.projectStates?.states === states) this.projectStates = undefined;
+    });
+    return states;
+  }
+
   async getDocuments(options: ListOptions = {}) { return this.getItems<GlpiDocument>('Document', options); }
   async getDocument(id: number, options: GetOptions = {}) { return this.getItem<GlpiDocument>('Document', id, options); }
 
@@ -1404,6 +1440,7 @@ export class GlpiClient {
       method: 'POST',
       json: { entities_id: entitiesId, is_recursive: isRecursive },
     });
+    this.activeEntity = { id: entitiesId, isRecursive };
   }
 
   /** Switch the active profile of the (process-wide) session. */
@@ -1412,5 +1449,32 @@ export class GlpiClient {
       method: 'POST',
       json: { profiles_id: profilesId },
     });
+    this.activeProfileId = profilesId;
+    // GLPI resets the active entities when the profile changes.
+    this.activeEntity = undefined;
+  }
+
+  /**
+   * Re-apply the chosen profile, then entity, to a new session. Sent with the
+   * new token explicitly (noSession): this runs inside initSession, so the
+   * calls must not wait for a session or trigger another re-authentication.
+   */
+  private async restoreSessionContext(token: string): Promise<void> {
+    if (this.activeProfileId !== undefined) {
+      await this.http.request('changeActiveProfile', {
+        method: 'POST',
+        json: { profiles_id: this.activeProfileId },
+        noSession: true,
+        sessionToken: token,
+      });
+    }
+    if (this.activeEntity) {
+      await this.http.request('changeActiveEntities', {
+        method: 'POST',
+        json: { entities_id: this.activeEntity.id, is_recursive: this.activeEntity.isRecursive },
+        noSession: true,
+        sessionToken: token,
+      });
+    }
   }
 }
