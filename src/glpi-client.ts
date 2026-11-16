@@ -25,6 +25,22 @@ import { SearchOptionsCache } from './search-options.js';
 
 export type GlpiConfig = GlpiHttpConfig;
 
+/**
+ * "YYYY-MM-DD HH:MM:SS" in local time.
+ *
+ * GLPI stores datetimes in its own server timezone and the whole server
+ * compares them with local time (see tool-helpers `monthBuckets` and
+ * `glpi_list_overdue_tickets`), so a UTC `toISOString()` would write a
+ * timestamp shifted by the process offset.
+ */
+export function formatGlpiDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
+}
+
 export interface GlpiTicket {
   id: number;
   name: string;
@@ -1231,8 +1247,7 @@ export class GlpiClient {
             tickets_id: ticketId,
             users_id_validate: options.users_id_validate,
             comment_submission: options.comment_submission ?? '',
-            submission_date:
-              options.submission_date ?? new Date().toISOString().slice(0, 19).replace('T', ' '),
+            submission_date: options.submission_date ?? formatGlpiDate(new Date()),
             status: 1, // 1=Waiting
           },
         },
@@ -1254,7 +1269,7 @@ export class GlpiClient {
           id: validationId,
           status,
           comment_validation: comment_validation ?? '',
-          validation_date: new Date().toISOString().slice(0, 19).replace('T', ' '),
+          validation_date: formatGlpiDate(new Date()),
         },
       },
     });
