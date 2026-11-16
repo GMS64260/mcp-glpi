@@ -133,6 +133,20 @@ See [Security notes](#security-notes) before exposing the port.
 | `MCP_HTTP_PATH` | `/mcp` | HTTP endpoint path |
 | `MCP_HTTP_AUTH_TOKEN` | none | When set, every MCP request needs `Authorization: Bearer <token>` (401 otherwise) |
 | `MCP_HTTP_ALLOWED_HOSTS` | loopback names | Comma-separated `Host` header allowlist (DNS-rebinding protection). Default when bound to loopback: `localhost`, `127.0.0.1`, `[::1]`, `host.docker.internal`; off when bound elsewhere |
+| `NODE_EXTRA_CA_CERTS` | none | Node.js variable: path of a PEM file with your internal CA, for a GLPI whose HTTPS certificate is signed by it (see [Self-signed or internal CA](#self-signed-or-internal-ca)) |
+
+### Self-signed or internal CA
+
+TLS is always verified. When GLPI's certificate comes from an internal CA or
+is self-signed, give Node.js that CA (or the certificate itself) rather than
+turning verification off:
+
+```json
+"env": { "GLPI_URL": "https://glpi.intranet", "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/intranet-ca.pem", "...": "..." }
+```
+
+`NODE_TLS_REJECT_UNAUTHORIZED=0` also works but disables verification for
+the whole process (Node prints a warning): keep it for a quick test.
 
 ### Retries
 
@@ -158,17 +172,17 @@ status 2; set `GLPI_DEBUG` for the stack trace of other startup failures.
 
 ## Tool catalogue
 
-46 tools in 9 toolsets: `core`, `tickets`, `itil`, `assets`, `users`,
+47 tools in 9 toolsets: `core`, `tickets`, `itil`, `assets`, `users`,
 `admin`, `session`, `kb`, `stats`. **`core`** (`glpi_list_items`,
 `glpi_get_item`, `glpi_search_v2`, `glpi_count`, `glpi_list_search_options`,
 `glpi_get_session_info`) is always registered, whatever `GLPI_TOOLSETS` says:
-`GLPI_TOOLSETS=tickets` lists the 18 ticket tools and these 6. **W** marks
+`GLPI_TOOLSETS=tickets` lists the 19 ticket tools and these 6. **W** marks
 write tools (removed by `GLPI_READ_ONLY=1`); the others carry
 `readOnlyHint: true`. The two `session` switches are kept in read-only mode
 and carry `destructiveHint: false`. Updates, status changes, assignments and
 deletes carry `destructiveHint: true`. Every tool rejects unknown arguments.
 
-### `tickets` (18)
+### `tickets` (19)
 
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
@@ -190,6 +204,30 @@ deletes carry `destructiveHint: true`. Every tool rejects unknown arguments.
 | `glpi_set_validation_status` | W | `validation_id`, `status` (2/3), `comment_validation` | Approve or refuse a validation |
 | `glpi_upload_document` | W | `content_base64` + `filename`, or `file_path`; `name`, `ticket_id` | Upload a Document (max 20 MB), optionally attached to a ticket |
 | `glpi_attach_document_to_ticket` | W | `ticket_id`, `document_id` | Link an existing Document to a ticket |
+| `glpi_merge_tickets` | W | `target_id`, `source_ids` (max 20), `copy`, `source_action`, `dry_run` | GLPI's merge (see below) |
+
+**Merging tickets.** GLPI's own "Merge" action is not in its REST API;
+`glpi_merge_tickets` rebuilds it. For each source ticket it copies to
+`target_id` the source description (as a followup), then, per `copy`
+(default all): `followups`, `tasks`, `documents` (links, skipped when the
+target has them) and `actors` (requesters, technicians, observers, users,
+groups and suppliers the target lacks). Each copied text starts with
+`[#source title · date]`; author, date and privacy are kept when GLPI
+allows it. The source is then linked as a duplicate of the target, gets a
+followup "Merged into ticket #N." and is moved to the trash like GLPI does
+(`source_action`: `trash`, `close` or `keep`). Every ticket is read before
+the first write, so a wrong id changes nothing; a source whose copy fails is
+neither linked nor trashed, and the result says what was already copied.
+`dry_run: true` returns, per source, what would be copied.
+
+**Correcting the timeline.** Followups, tasks and solutions are edited or
+removed with the generic tools (ids from `glpi_get_ticket_timeline`):
+`glpi_update_item` / `glpi_delete_item` with itemtype `ITILFollowup`
+(`content`, `is_private`, `requesttypes_id`), `TicketTask` / `ChangeTask` /
+`ProblemTask` (`content`, `state`, `actiontime`, `is_private`,
+`users_id_tech`, `groups_id_tech`, `begin`, `end`, `taskcategories_id`) or
+`ITILSolution` (`content`, `solutiontypes_id`). GLPI has no trash for them:
+`glpi_delete_item` refuses without `purge: true` and `confirm_id`.
 
 `"me"` is the connected account: its id is read once from the GLPI session
 (`glpiID`) and cached for the life of the process. The actor filters use the
@@ -220,19 +258,24 @@ and solutions go through the ticket tools with `itemtype`.
 
 ### `core` (2) and `assets` (3): generic item tools
 
-These work on 26 itemtypes: `Computer`, `Software`, `NetworkEquipment`,
+These work on 27 itemtypes: `Computer`, `Software`, `NetworkEquipment`,
 `Printer`, `Monitor`, `Phone`, `Peripheral`, `Rack`, `Enclosure`, `PDU`,
-`KnowbaseItem`, `Contract`, `Supplier`, `Location`, `Entity`, `Project`,
-`Document`, `Group`, `ITILCategory`, `Ticket`, `Problem`, `Change`, `User`,
-`Profile`, `ProjectTask`, `ProjectState`. The write tools also take the
-project links `ProjectTeam`, `ProjectTaskTeam`, `Itil_Project` and
-`ProjectTask_Ticket` (create and delete; read them with `glpi_get_item`
-`with`).
+`KnowbaseItem`, `Contract`, `Supplier`, `Contact`, `Location`, `Entity`,
+`Project`, `Document`, `Group`, `ITILCategory`, `Ticket`, `Problem`,
+`Change`, `User`, `Profile`, `ProjectTask`, `ProjectState`. The write tools
+also take links (create and delete): the project links `ProjectTeam`,
+`ProjectTaskTeam`, `Itil_Project` and `ProjectTask_Ticket`, the KB
+visibility targets `KnowbaseItem_Profile`, `Group_KnowbaseItem`,
+`KnowbaseItem_User` and `Entity_KnowbaseItem` (read both with
+`glpi_get_item` `with`), and `Contact_Supplier` / `Contract_Supplier`
+(`{contacts_id or contracts_id, suppliers_id}`); and the timeline rows
+(`ITILFollowup`, `TicketTask`, `ChangeTask`, `ProblemTask`, `ITILSolution`,
+see [Correcting the timeline](#tickets-19)).
 
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
 | `glpi_list_items` | core | `itemtype`, paging, `sort`, `order`, `search_text`, `is_deleted`, `expand_dropdowns`, `fields`, `verbose` | Compact rows of one itemtype; `search_text` = `{column: "substring"}`, `"^x$"` for exact |
-| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, and the project sections below |
+| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, the project sections below, and `visibility` on a `KnowbaseItem` |
 | `glpi_create_item` | W | `itemtype`, `input` | Create from GLPI column values, e.g. `{"name":"PC-42","locations_id":3}`. Without `entities_id` the item lands in the active entity, and the result names it (`entities_id`) |
 | `glpi_update_item` | W | `itemtype`, `id`, `input` | Change the given columns; `Computer`, `Project` and `ProjectTask` accept only their usual fields, `Ticket` / `Problem` / `Change` exactly those of `glpi_update_ticket` / `glpi_update_problem` / `glpi_update_change`; links cannot be updated (delete, then create) |
 | `glpi_delete_item` | W | `itemtype`, `id`, `purge`, `confirm_id` | Trash, or purge with `confirm_id` = `id` |
@@ -276,6 +319,15 @@ overwrites a manual value. On a `ProjectTask`: `name`, `content`, `comment`,
 `percent_done`, the four dates, `planned_duration`, `effective_duration`,
 `is_milestone`, `users_id`.
 
+**Knowledge base visibility.** `glpi_get_item {itemtype: "KnowbaseItem",
+id, with: ["visibility"]}` returns `_visibility`: one row per target with
+the link row `id`, `link` (its itemtype), `itemtype` (`Profile`, `Group`,
+`User`, `Entity`), `items_id`, `name` and, for profiles and groups, the
+entity restriction (`entities_id`, `is_recursive`). Share an article with
+`glpi_create_item`, e.g. `{itemtype: "Group_KnowbaseItem", input:
+{knowbaseitems_id: 3, groups_id: 4, entities_id: 0, is_recursive: 1}}`;
+withdraw it with `glpi_delete_item {itemtype: <link>, id: <link row id>}`.
+
 ### `users` (3), `admin` (2), `session` (2)
 
 | Tool | | Main parameters | What it does |
@@ -298,8 +350,25 @@ overwrites a manual value. On a `ProjectTask`: `name`, `content`, `comment`,
 | `glpi_list_search_options` | core | `itemtype`, `query` | Searchable fields (id, uid, column, datatype, searchtypes) |
 | `glpi_search_knowbase` | | `query`, `start`, `limit` | KB articles whose title contains `query` |
 | `glpi_create_knowbase_item` | W | `name`, `answer`, `is_faq`, `knowbaseitemcategories_id` | Create a KB article |
-| `glpi_tickets_stats_by` | | `dimension` (`status`, `category`, `technician`, `entity`, `month`), `date_from`, `date_to`, `entity_id` | Ticket counts per dimension and `total`; `month` covers the last 6 months by default, 36 at most |
+| `glpi_tickets_stats_by` | | `dimension` (`status`, `category`, `technician`, `entity`, `month`, `delays`), `date_from`, `date_to`, `entity_id` | Ticket counts per dimension and `total`; `month` covers the last 6 months by default, 36 at most; `delays`: see below |
 | `glpi_get_asset_stats` | | none | Counts of computers, monitors, printers, network equipment, phones, software |
+
+`dimension: "delays"` reads GLPI's own delay columns of the matching tickets
+(seconds, counted on the entity calendar when one is set; 10,000 tickets at
+most, `truncated` beyond) and returns, for `take_into_account`, `solve` and
+`close`, the number of tickets, the mean, median and 90th percentile in
+hours, plus `deadline`: solved tickets that had a `time_to_resolve`, how
+many were solved late and the late rate (%).
+
+Search rows always carry the item `id`: GLPI returns it only when it is a
+displayed column, so the server asks for GLPI's default columns (your
+display preferences, else the global ones) plus the id.
+
+User columns reached through a link (ticket requester, technician,
+observer...) come from GLPI 11 as user ids (`"605"`, or a list when there
+are several): the server replaces them with "First Last" (the login when the
+user has no name), looked up in one search per page and kept for the life
+of the process. An id it cannot resolve (deleted user, no right) stays.
 
 `criteria` is `[{field, searchtype, value, link}]`. `field` is a search-option
 id, uid, column or label (an unknown name is rejected with the 5 closest

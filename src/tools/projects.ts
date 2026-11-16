@@ -120,7 +120,7 @@ async function describeLinks(client: GlpiClient, refs: readonly LinkedRef[]): Pr
 }
 
 /** Link rows as `{ id, itemtype, items_id, name[, status, status_label] }`. */
-async function linkRows(client: GlpiClient, rows: readonly Row[], toRef: (row: Row) => LinkedRef): Promise<Row[]> {
+export async function linkRows(client: GlpiClient, rows: readonly Row[], toRef: (row: Row) => LinkedRef): Promise<Row[]> {
   const refs = rows.map(toRef);
   const names = await describeLinks(client, refs);
   return rows.map((row, i) => ({ id: row.id, ...refs[i], ...(names.get(refKey(refs[i])) ?? {}) }));
@@ -130,7 +130,7 @@ const polymorphic = (row: Row): LinkedRef => ({ itemtype: String(row.itemtype), 
 const ticketLink = (row: Row): LinkedRef => ({ itemtype: 'Ticket', items_id: Number(row.tickets_id) });
 
 /** Raw rows of a sub-resource, ids not names (link targets and parents stay ids). */
-const rawRows = async (client: GlpiClient, path: string) =>
+export const rawRows = async (client: GlpiClient, path: string) =>
   (await client.getSubItems(path, { expand_dropdowns: false })) as Row[];
 
 // ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ const rawRows = async (client: GlpiClient, path: string) =>
 // ---------------------------------------------------------------------------
 
 /** "403 ERROR_RIGHT_MISSING ..." for a GLPI refusal, the message otherwise. */
-function sectionError(err: unknown): string {
+export function sectionError(err: unknown): string {
   if (err instanceof GlpiError) return [err.status, err.glpiCode, err.glpiMessage].filter(Boolean).join(' ');
   return err instanceof Error ? err.message : String(err);
 }

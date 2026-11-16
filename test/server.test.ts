@@ -31,7 +31,7 @@ const EXPECTED_TOOLS = [
   'glpi_get_ticket_satisfaction', 'glpi_create_ticket', 'glpi_update_ticket', 'glpi_set_ticket_status',
   'glpi_delete_ticket', 'glpi_add_followup', 'glpi_add_task', 'glpi_add_solution', 'glpi_assign_ticket',
   'glpi_link_tickets', 'glpi_add_ticket_validation', 'glpi_set_validation_status', 'glpi_upload_document',
-  'glpi_attach_document_to_ticket',
+  'glpi_attach_document_to_ticket', 'glpi_merge_tickets',
   // itil
   'glpi_list_problems', 'glpi_get_problem', 'glpi_create_problem', 'glpi_update_problem',
   'glpi_list_changes', 'glpi_get_change', 'glpi_create_change', 'glpi_update_change',
@@ -158,8 +158,9 @@ test('tools/list is exactly the v4 catalogue, without aliases', async () => {
 test('catalogue size stays under its ceiling', async () => {
   // tools/list goes with every request of a session: 44,291 chars in the
   // first v4 cut, 41,921 in v3. Raise these only with a reason.
+  // 4.2.0: 26,000 -> 26,500 for glpi_merge_tickets (GLPI's merge, ~560 chars).
   const full = JSON.stringify({ tools: await listNames() }).length;
-  assert.ok(full <= 26_000, `full catalogue: ${full} chars`);
+  assert.ok(full <= 26_500, `full catalogue: ${full} chars`);
   const readOnly = JSON.stringify({ tools: await listNames(parseRegistryOptions({ GLPI_READ_ONLY: '1' })) }).length;
   assert.ok(readOnly <= 13_000, `GLPI_READ_ONLY=1 catalogue: ${readOnly} chars`);
   assert.ok(INSTRUCTIONS.length <= 2_500, `instructions: ${INSTRUCTIONS.length} chars`);
@@ -301,7 +302,7 @@ test('GLPI_TOOLSETS=tickets lists the tickets toolset plus the always-on core', 
   const tools = await listNames(parseRegistryOptions({ GLPI_TOOLSETS: 'tickets' }));
   const expected = ALL_TOOLS.filter((d) => d.toolset === 'tickets' || d.toolset === 'core').map((d) => d.name).sort();
   assert.deepEqual(tools.map((t) => t.name).sort(), expected);
-  assert.equal(expected.length, 24);
+  assert.equal(expected.length, 25);
   const core = ALL_TOOLS.filter((d) => d.toolset === 'core').map((d) => d.name).sort();
   assert.deepEqual(core, [
     'glpi_count', 'glpi_get_item', 'glpi_get_session_info', 'glpi_list_items', 'glpi_list_search_options', 'glpi_search_v2',
@@ -595,6 +596,9 @@ test('glpi_search_tickets returns an envelope with friendly keys and labels', as
   const search = calls.find((c) => c.path === 'search/Ticket')!;
   assert.equal(search.query.get('range'), '0-1');
   assert.equal(search.query.get('criteria[0][field]'), '12');
+  // Default order: last update first (GLPI alone would sort by id ascending).
+  assert.equal(search.query.get('sort'), '19');
+  assert.equal(search.query.get('order'), 'DESC');
   assert.ok(!resultText(res).includes('\n'), 'compact JSON');
   await close();
 });

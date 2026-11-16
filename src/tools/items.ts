@@ -10,6 +10,7 @@ import { COMPACT_FIELDS, compactItem, listEnvelope, text } from '../output.js';
 import { advertisedAs, defineTool, type ToolDef } from './registry.js';
 import { ITIL_UPDATE_FIELDS } from './itil.js';
 import { TICKET_UPDATE_FIELDS, checkPurge } from './tickets.js';
+import { readKbVisibility } from './kb.js';
 import { PROJECT_WITH, projectStatesFor, readProjectSections, withProjectState } from './projects.js';
 import { fields, id, listShape, optBool, optInt, textShape, toListOptions, verbose } from './common.js';
 
@@ -19,18 +20,36 @@ export const ITEMTYPES = [
   'Computer', 'Software', 'NetworkEquipment', 'Printer', 'Monitor', 'Phone', 'Peripheral',
   'Rack', 'Enclosure', 'PDU', 'KnowbaseItem', 'Contract', 'Supplier', 'Location', 'Entity',
   'Project', 'Document', 'Group', 'ITILCategory', 'Ticket', 'Problem', 'Change', 'User', 'Profile',
-  'ProjectTask', 'ProjectState',
+  'ProjectTask', 'ProjectState', 'Contact',
 ] as const;
 
 /**
  * Link itemtypes, written through glpi_create_item / glpi_delete_item and
  * read through glpi_get_item `with` on the project or task.
  */
-export const LINK_ITEMTYPES = ['ProjectTeam', 'ProjectTaskTeam', 'Itil_Project', 'ProjectTask_Ticket'] as const;
-export const WRITE_ITEMTYPES = [...ITEMTYPES, ...LINK_ITEMTYPES] as const;
+export const LINK_ITEMTYPES = [
+  'ProjectTeam', 'ProjectTaskTeam', 'Itil_Project', 'ProjectTask_Ticket',
+  // Who may read a KB article: read through glpi_get_item `with: visibility` (kb.ts).
+  'KnowbaseItem_Profile', 'Group_KnowbaseItem', 'KnowbaseItem_User', 'Entity_KnowbaseItem',
+  // Supplier contacts and contracts.
+  'Contact_Supplier', 'Contract_Supplier',
+] as const;
+
+/**
+ * Timeline rows of a ticket, change or problem (ids from
+ * glpi_get_ticket_timeline), written through the generic tools to correct or
+ * remove them; glpi_add_followup / _task / _solution create them. GLPI has
+ * no trash for them: deleting needs purge and confirm_id.
+ */
+export const TIMELINE_ITEMTYPES = ['ITILFollowup', 'TicketTask', 'ChangeTask', 'ProblemTask', 'ITILSolution'] as const;
+const NO_TRASH = new Set<string>(TIMELINE_ITEMTYPES);
+
+export const WRITE_ITEMTYPES = [...ITEMTYPES, ...LINK_ITEMTYPES, ...TIMELINE_ITEMTYPES] as const;
 export type Itemtype = (typeof WRITE_ITEMTYPES)[number];
 
 const itemtypeSchema = z.enum(ITEMTYPES);
+/** glpi_get_item lists the itemtype as a string: glpi_list_items lists the values. */
+const itemtypeGetSchema = advertisedAs(z.enum(ITEMTYPES), { type: 'string', description: 'As in glpi_list_items' });
 /**
  * Write tools validate their enum but list it as a string: the values are
  * already listed by glpi_list_items / glpi_get_item, and an invalid itemtype
@@ -38,7 +57,7 @@ const itemtypeSchema = z.enum(ITEMTYPES);
  */
 const itemtypeWriteSchema = advertisedAs(z.enum(WRITE_ITEMTYPES), {
   type: 'string',
-  description: 'Itemtype, as in glpi_list_items',
+  description: 'As in glpi_list_items; timeline rows: ITILFollowup, TicketTask, ITILSolution',
 });
 
 /** Sub-resources glpi_get_item can embed (GLPI `with_*` query flags). */
@@ -47,9 +66,13 @@ export const WITH_FLAGS = [
   'tickets', 'problems', 'changes', 'logs',
 ] as const;
 
-/** `with` values: GLPI's flags, then the project sections (projects.ts). */
-export const WITH_VALUES = [...WITH_FLAGS, ...PROJECT_WITH] as const;
+/** `with` values: GLPI's flags, the project sections (projects.ts), KB visibility (kb.ts). */
+export const WITH_VALUES = [...WITH_FLAGS, ...PROJECT_WITH, 'visibility'] as const;
 const PROJECT_ONLY = new Set<string>(PROJECT_WITH);
+
+const TASK_UPDATE_FIELDS = [
+  'content', 'state', 'actiontime', 'is_private', 'users_id_tech', 'groups_id_tech', 'begin', 'end', 'taskcategories_id',
+];
 
 /** Fields glpi_update_item may change, where v3 restricted them. */
 export const UPDATE_FIELDS: Partial<Record<Itemtype, readonly string[]>> = {
@@ -77,6 +100,17 @@ export const UPDATE_FIELDS: Partial<Record<Itemtype, readonly string[]>> = {
   Ticket: TICKET_UPDATE_FIELDS,
   Problem: ITIL_UPDATE_FIELDS,
   Change: ITIL_UPDATE_FIELDS,
+  KnowbaseItem_Profile: [],
+  Group_KnowbaseItem: [],
+  KnowbaseItem_User: [],
+  Entity_KnowbaseItem: [],
+  Contact_Supplier: [],
+  Contract_Supplier: [],
+  ITILFollowup: ['content', 'is_private', 'requesttypes_id'],
+  TicketTask: TASK_UPDATE_FIELDS,
+  ChangeTask: TASK_UPDATE_FIELDS,
+  ProblemTask: TASK_UPDATE_FIELDS,
+  ITILSolution: ['content', 'solutiontypes_id'],
 };
 
 const PASSWORD_FIELDS = ['password', 'password2'];
@@ -88,6 +122,17 @@ export const CREATE_REQUIRED: Partial<Record<Itemtype, readonly string[]>> = {
   ProjectTaskTeam: ['projecttasks_id', 'itemtype', 'items_id'],
   Itil_Project: ['projects_id', 'itemtype', 'items_id'],
   ProjectTask_Ticket: ['projecttasks_id', 'tickets_id'],
+  KnowbaseItem_Profile: ['knowbaseitems_id', 'profiles_id'],
+  Group_KnowbaseItem: ['knowbaseitems_id', 'groups_id'],
+  KnowbaseItem_User: ['knowbaseitems_id', 'users_id'],
+  Entity_KnowbaseItem: ['knowbaseitems_id', 'entities_id'],
+  Contact_Supplier: ['contacts_id', 'suppliers_id'],
+  Contract_Supplier: ['contracts_id', 'suppliers_id'],
+  ITILFollowup: ['itemtype', 'items_id', 'content'],
+  TicketTask: ['tickets_id', 'content'],
+  ChangeTask: ['changes_id', 'content'],
+  ProblemTask: ['problems_id', 'content'],
+  ITILSolution: ['itemtype', 'items_id', 'content'],
 };
 
 /**
@@ -150,9 +195,9 @@ const getItem = defineTool({
   title: 'Get item',
   toolset: 'core',
   description:
-    'One item, compact, plus related data (with). Project: state, counts, tasks, team, tickets, costs...; refused parts go to _errors.',
+    'One item, compact, plus related data (with). Project: state, counts, tasks, team...; KnowbaseItem: visibility. Refused parts go to _errors.',
   inputSchema: {
-    itemtype: itemtypeSchema,
+    itemtype: itemtypeGetSchema,
     id: id(),
     with: z.array(z.enum(WITH_VALUES)).optional().describe('Related data to embed'),
     verbose,
@@ -163,6 +208,8 @@ const getItem = defineTool({
     const isProject = a.itemtype === 'Project' || a.itemtype === 'ProjectTask';
     const misplaced = [...flags].filter((f) => PROJECT_ONLY.has(f));
     if (!isProject && misplaced.length) throw invalid(`with ${misplaced.join(', ')}: Project only`);
+    const visibility = flags.delete('visibility');
+    if (visibility && a.itemtype !== 'KnowbaseItem') throw invalid('with visibility: KnowbaseItem only');
     const notForTask = misplaced.filter((f) => f !== 'team');
     if (a.itemtype === 'ProjectTask' && notForTask.length) throw invalid(`with ${notForTask.join(', ')}: Project only (ProjectTask takes team, tickets)`);
     const states = await projectStatesFor(client, a.itemtype);
@@ -170,7 +217,9 @@ const getItem = defineTool({
     // it handles synchronously, before its first await: the rest go to GLPI.
     const sections = isProject
       ? readProjectSections(client, a.itemtype as 'Project' | 'ProjectTask', a.id, flags, states ?? [], a)
-      : Promise.resolve({});
+      : visibility
+        ? readKbVisibility(client, a.id)
+        : Promise.resolve({});
     const opts: GetOptions = {};
     for (const flag of flags) (opts as Record<string, boolean>)[`with_${flag}`] = true;
     const [item, extra] = await Promise.all([client.getItem<Record<string, unknown>>(a.itemtype, a.id, opts), sections]);
@@ -238,6 +287,9 @@ const deleteItem = defineTool({
     confirm_id: optInt('Same id, to confirm a purge'),
   },
   handler: async ({ client }, a) => {
+    if (NO_TRASH.has(a.itemtype) && !a.purge) {
+      throw invalid(`${a.itemtype} has no trash in GLPI: deleting it is permanent. Set purge=true and confirm_id=${a.id}.`);
+    }
     const purge = checkPurge(a.id, a.purge, a.confirm_id);
     await client.deleteItem(a.itemtype, a.id, purge);
     return text({ success: true, itemtype: a.itemtype, id: a.id, purged: purge });

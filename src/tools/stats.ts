@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import type { GlpiClient } from '../glpi-client.js';
 import type { SearchCriterion } from '../search.js';
 import { TICKET_STATUS } from '../itil.js';
 import { text } from '../output.js';
@@ -14,10 +15,11 @@ const ticketsStatsBy = defineTool({
   name: 'glpi_tickets_stats_by',
   title: 'Ticket statistics',
   toolset: 'stats',
-  description: 'Ticket counts by status, category, technician, entity or month, optionally per entity and opening period.',
+  description:
+    'Ticket counts by status, category, technician, entity or month, or delays (take into account, solve, close, deadline), per entity and opening period.',
   inputSchema: {
     dimension: z
-      .enum(['status', 'category', 'technician', 'entity', 'month'])
+      .enum(['status', 'category', 'technician', 'entity', 'month', 'delays'])
       .optional()
       .describe('Default status; month: last 6 by default, max 36'),
     date_from: optStr(`Opened after ${DATE}`),
@@ -31,6 +33,8 @@ const ticketsStatsBy = defineTool({
     if (a.date_from) base.push({ field: TICKET_FIELDS.date, searchtype: 'morethan', value: a.date_from });
     if (a.date_to) base.push({ field: TICKET_FIELDS.date, searchtype: 'lessthan', value: a.date_to });
     const withBase = (first: SearchCriterion): SearchCriterion[] => [first, ...base.map((b) => ({ ...b, link: 'AND' as const }))];
+
+    if (dimension === 'delays') return text(await delayStats(client, base));
 
     const counts: Record<string, number> = {};
     if (dimension === 'status') {
@@ -72,6 +76,80 @@ const ticketsStatsBy = defineTool({
     return text({ dimension, counts, total: Object.values(counts).reduce((s, n) => s + n, 0) });
   },
 });
+
+/** Rows read for dimension "delays", at most. */
+export const DELAY_MAX_ROWS = 10_000;
+
+const DELAY_FIELDS = {
+  takeintoaccount: ['Ticket.takeintoaccount_delay_stat', 150],
+  solve: ['Ticket.solve_delay_stat', 154],
+  close: ['Ticket.close_delay_stat', 152],
+} as const;
+
+/** count, mean, median and 90th percentile, in hours (1 decimal); null when empty. */
+export function summarizeSeconds(values: number[]): Record<string, number> | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((x, y) => x - y);
+  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
+  const hours = (s: number) => Math.round((s / 3600) * 10) / 10;
+  return {
+    count: sorted.length,
+    avg_hours: hours(sorted.reduce((n, v) => n + v, 0) / sorted.length),
+    median_hours: hours(at(0.5)),
+    p90_hours: hours(at(0.9)),
+  };
+}
+
+/**
+ * Delays of the tickets matching `base`, from GLPI's own delay columns
+ * (seconds, counted on the entity calendar when there is one): take into
+ * account, solve and close; and how many solved tickets met their
+ * time_to_resolve deadline.
+ */
+async function delayStats(client: GlpiClient, base: SearchCriterion[]) {
+  const ids = await Promise.all(
+    Object.values(DELAY_FIELDS).map(([uid, fallback]) =>
+      client.searchOptions.resolveField('Ticket', uid).then((id) => id ?? fallback, () => fallback)
+    )
+  );
+  const [solvedate, ttr] = await Promise.all([ticketField(client, 'solvedate'), ticketField(client, 'time_to_resolve')]);
+  const criteria = base.map((c, i) => (i === 0 ? { ...c, link: undefined } : { ...c, link: 'AND' as const }));
+  const result = await client.search.search<Record<string, unknown>>('Ticket', {
+    criteria,
+    forcedisplay: [...ids, solvedate, ttr],
+    fetchAll: true,
+    maxRows: DELAY_MAX_ROWS,
+    limit: 500,
+  });
+  const rows = result.data;
+  // Rows are keyed by column name, or by option id when the catalogue is unreadable.
+  const value = (r: Record<string, unknown>, column: string, optionId: number) => r[column] ?? r[String(optionId)];
+  const [tiaId, solveId, closeId] = ids;
+  const seconds = (column: string, optionId: number) =>
+    rows.map((r) => Number(value(r, column, optionId))).filter((n) => Number.isFinite(n) && n > 0);
+  let late = 0;
+  let onTime = 0;
+  for (const r of rows) {
+    const solved = value(r, 'solvedate', solvedate);
+    const deadline = value(r, 'time_to_resolve', ttr);
+    if (typeof solved !== 'string' || !solved || typeof deadline !== 'string' || !deadline) continue;
+    if (solved > deadline) late++;
+    else onTime++;
+  }
+  return {
+    dimension: 'delays',
+    tickets: result.totalcount,
+    ...(rows.length < result.totalcount ? { rows_read: rows.length, truncated: true } : {}),
+    take_into_account: summarizeSeconds(seconds('takeintoaccount_delay_stat', tiaId)),
+    solve: summarizeSeconds(seconds('solve_delay_stat', solveId)),
+    close: summarizeSeconds(seconds('close_delay_stat', closeId)),
+    deadline: {
+      solved_with_deadline: late + onTime,
+      solved_late: late,
+      late_rate: late + onTime ? Math.round((late / (late + onTime)) * 1000) / 10 : null,
+    },
+  };
+}
 
 const assetStats = defineTool({
   name: 'glpi_get_asset_stats',

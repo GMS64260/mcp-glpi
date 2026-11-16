@@ -9,6 +9,7 @@ import { registerPrompts, skippedPromptsNote } from './prompts.js';
 import { registerResources } from './resources.js';
 import { ALIASES } from './tools/aliases.js';
 import { ITEM_TOOLS } from './tools/items.js';
+import { MERGE_TOOLS } from './tools/merge.js';
 import { ITIL_TOOLS } from './tools/itil.js';
 import { type AliasDef, type RegistryOptions, type ToolDef, parseRegistryOptions, registerAll, selectTools } from './tools/registry.js';
 import { SEARCH_TOOLS } from './tools/search.js';
@@ -17,13 +18,14 @@ import { TICKET_TOOLS } from './tools/tickets.js';
 import { USER_TOOLS } from './tools/users.js';
 
 /** Keep in sync with package.json (a test checks it). */
-export const SERVER_VERSION = '4.1.0';
+export const SERVER_VERSION = '4.2.0';
 
 export type ServerOptions = RegistryOptions;
 export const parseServerOptions = parseRegistryOptions;
 
 export const ALL_TOOLS: readonly ToolDef[] = [
   ...TICKET_TOOLS,
+  ...MERGE_TOOLS,
   ...ITIL_TOOLS,
   ...ITEM_TOOLS,
   ...USER_TOOLS,
@@ -48,7 +50,7 @@ Dates: 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DD', GLPI server time.
 Search criteria: [{field, searchtype, value, link}]; field is a search-option id, uid or column (glpi_list_search_options), link joins it to the previous one. Status takes a code, notold (open), old (solved/closed) or all, with equals; never lessthan/morethan. Example: {"itemtype":"Computer","criteria":[{"field":"name","searchtype":"contains","value":"PC-"}]}.
 Lists return {totalcount,start,count,next_start,items}, 25 rows by default (limit max 500); pass start=next_start for the next page (null: last). sort: column name or search-option id; order: ASC/DESC. is_deleted=true lists only trashed rows. expand_dropdowns=false gives ids, not labels. fetch_all follows pages up to max_rows (default 1000).
 Text fields come as plain text cut at max_content_chars (default 2000, 0 = no cap) with a "…[truncated, N chars]" marker; raw_html=true returns the stored HTML uncut. Rows are a compact projection: fields picks the keys, verbose=true returns every raw GLPI field.
-Write tools (create, update, delete, add, assign, link, set, upload) change production data: confirm with the user first. Deletes go to the trash; purge=true is permanent and needs confirm_id equal to id.`;
+Write tools (create, update, delete, add, assign, link, merge, set, upload) change production data: confirm with the user first. Deletes go to the trash; purge=true is permanent and needs confirm_id equal to id.`;
 
 /**
  * Startup note naming the prompts that `options` leaves without one of their

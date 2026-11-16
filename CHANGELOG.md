@@ -1,5 +1,60 @@
 # Changelog
 
+## 4.2.0 — 2026-11-16
+
+What a review of another GLPI MCP server suggested, plus four bugs found
+on the way against a live GLPI 11. One new tool: 47 tools, 26,294
+characters (ceiling raised from 26,000 to 26,500 for it); 12,828 with
+`GLPI_READ_ONLY=1`, 167 fewer than 4.1.0.
+
+### Added
+
+- **`glpi_merge_tickets`** (`tickets`): GLPI's "Merge" action, which the
+  REST API lacks. Copies each source's description, followups, tasks,
+  document links and actors into the target (each text prefixed with its
+  origin; documents and actors the target already has are skipped), links
+  the source as a duplicate, leaves it a followup and trashes it
+  (`source_action`: `trash`, `close`, `keep`). All tickets are read before
+  the first write; a source whose copy fails is left untouched and
+  reported. `dry_run` counts without writing.
+- **Timeline corrections.** `glpi_update_item` / `glpi_delete_item` take
+  `ITILFollowup`, `TicketTask`, `ChangeTask`, `ProblemTask` and
+  `ITILSolution`, with allow-lists of editable fields. They have no trash in
+  GLPI: deleting needs `purge` and `confirm_id`.
+- **Knowledge base visibility.** `glpi_get_item` on a `KnowbaseItem` takes
+  `with: ["visibility"]` (profiles, groups, users, entities the article is
+  shared with); the write tools take the links `KnowbaseItem_Profile`,
+  `Group_KnowbaseItem`, `KnowbaseItem_User`, `Entity_KnowbaseItem`.
+- **Contacts.** `Contact` in the generic item tools, and the links
+  `Contact_Supplier`, `Contract_Supplier` in the write tools.
+- **Delay statistics.** `glpi_tickets_stats_by` `dimension: "delays"`:
+  mean, median and 90th percentile of the take-into-account, solve and close
+  delays (GLPI's own columns), and the share of solved tickets that missed
+  their `time_to_resolve`.
+- README: internal CA / self-signed certificate (`NODE_EXTRA_CA_CERTS`).
+
+### Fixed
+
+- **Search rows had no `id`** for most itemtypes (`glpi_search_v2`,
+  `glpi_search_knowbase`...): GLPI returns it only when it is a displayed
+  column. Searches now send GLPI's default columns (the user's display
+  preferences, else the global ones, for the session's interface) plus the
+  id; when the preferences cannot be read, GLPI chooses as before.
+- **Requesters, technicians and observers showed as user ids** in search
+  rows on GLPI 11 (`"requester_name":"605"`, or a list of ids). They are now
+  names ("First Last"), resolved in one User search per page and cached.
+- **`glpi_search_tickets` without `sort` returned the oldest tickets**:
+  no sort was sent, so GLPI ordered by id. The advertised default, last
+  update first, is now sent.
+- `glpi_get_item` lists `itemtype` as a string pointing to
+  `glpi_list_items` instead of repeating the 27 values (validation
+  unchanged), which pays for the additions above in the read-only catalogue.
+
+### Internal
+
+- `GlpiClient.sessionInfo()` reads the session user and interface once
+  (again after a profile change); `"me"` and the display preferences share it.
+
 ## 4.1.0 — 2026-11-04
 
 Projects become readable and writable below the header, a stale entity scope
