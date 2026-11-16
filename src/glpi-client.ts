@@ -437,6 +437,12 @@ export interface ProjectState {
 // CLIENT
 // ============================================================================
 
+/** Who the session is: user id (glpiID) and interface of the active profile. */
+export interface SessionInfo {
+  userId: number;
+  interface: 'central' | 'helpdesk';
+}
+
 export class GlpiClient {
   readonly http: GlpiHttp;
   readonly search: GlpiSearch;
@@ -455,7 +461,32 @@ export class GlpiClient {
     this.http.onSessionStart = (token) => this.restoreSessionContext(token);
     this.searchOptions = new SearchOptionsCache(this.http);
     // Search rows come back keyed by readable names (see mapRowKeys).
-    this.search = new GlpiSearch(this.http, this.searchOptions);
+    this.search = new GlpiSearch(this.http, this.searchOptions, () => this.sessionInfo());
+  }
+
+  private sessionInfoPromise?: Promise<SessionInfo>;
+
+  /**
+   * User id and interface of the session (getFullSession), read once per
+   * process and again after a profile change. A failed read (or one without
+   * glpiID) is not kept: the next call retries.
+   */
+  sessionInfo(): Promise<SessionInfo> {
+    if (!this.sessionInfoPromise) {
+      const pending = this.getFullSession().then((full) => {
+        const session = ((full as { session?: Record<string, unknown> } | undefined)?.session ?? {}) as Record<string, unknown>;
+        const profile = (session.glpiactiveprofile ?? {}) as Record<string, unknown>;
+        const userId = Number(session.glpiID);
+        // Without its user the answer is unusable: not kept, like a failure.
+        if (!Number.isInteger(userId) || userId <= 0) throw new Error('getFullSession returned no session.glpiID');
+        return { userId, interface: profile.interface === 'helpdesk' ? 'helpdesk' : 'central' } as SessionInfo;
+      });
+      pending.catch(() => {
+        if (this.sessionInfoPromise === pending) this.sessionInfoPromise = undefined;
+      });
+      this.sessionInfoPromise = pending;
+    }
+    return this.sessionInfoPromise;
   }
 
   // ---- session ----
@@ -1452,6 +1483,8 @@ export class GlpiClient {
     this.activeProfileId = profilesId;
     // GLPI resets the active entities when the profile changes.
     this.activeEntity = undefined;
+    // The interface (central / helpdesk) may have changed with it.
+    this.sessionInfoPromise = undefined;
   }
 
   /**

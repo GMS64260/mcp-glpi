@@ -203,7 +203,12 @@ export class GlpiSearch {
    * @param searchOptions catalogue used to rename row keys (numeric option
    *   ids -> readable names). Without it rows are returned as GLPI sent them.
    */
-  constructor(private http: GlpiHttp, private searchOptions?: SearchOptionsCache) {}
+  constructor(
+    private http: GlpiHttp,
+    private searchOptions?: SearchOptionsCache,
+    /** Session user and interface, to pick the display preferences; without it, the global ones. */
+    private session?: () => Promise<{ userId?: number; interface: string }>
+  ) {}
 
   /** Map row keys through the catalogue; falls back to raw rows if it cannot be read. */
   private async readableRows<T>(itemtype: string, rows: T[]): Promise<T[]> {
@@ -217,7 +222,140 @@ export class GlpiSearch {
       }
       return rows;
     }
-    return mapRowKeys<T>(itemtype, rows, catalogue);
+    const named = itemtype === 'User' ? rows : await this.withUserNames(rows, catalogue);
+    return mapRowKeys<T>(itemtype, named, catalogue);
+  }
+
+  /** Display names of users by id, filled by loadUserNames; kept for the life of the process. */
+  private userNames = new Map<number, string>();
+
+  /**
+   * GLPI 11 returns user columns reached through a link (Ticket requester,
+   * technician, observer...) as user ids: "605", or ["10","693"] for several
+   * users. Replace them with "First Last" (login when the user has no name),
+   * looked up in one search per 50 unknown users. Text values (logins) are
+   * left alone, and so is an id GLPI does not return (deleted user, refused).
+   */
+  private async withUserNames<T>(rows: T[], catalogue: SearchOptionsCatalogue): Promise<T[]> {
+    const keys = [...catalogue.byId.values()]
+      .filter((o) => o.table === 'glpi_users' && o.field === 'name')
+      .map((o) => String(o.id));
+    if (keys.length === 0) return rows;
+    const isId = (v: unknown) => typeof v === 'string' && /^\d+$/.test(v) && v !== '0';
+    const ids = new Set<number>();
+    for (const row of rows as Array<Record<string, unknown>>) {
+      for (const k of keys) {
+        const v = row?.[k];
+        for (const x of Array.isArray(v) ? v : [v]) if (isId(x)) ids.add(Number(x));
+      }
+    }
+    const missing = [...ids].filter((id) => !this.userNames.has(id));
+    if (missing.length) await this.loadUserNames(missing);
+    if (ids.size === 0) return rows;
+    const name = (x: unknown) => (isId(x) ? this.userNames.get(Number(x)) ?? x : x);
+    return (rows as Array<Record<string, unknown>>).map((row) => {
+      if (!row || typeof row !== 'object') return row;
+      const out = { ...row };
+      for (const k of keys) {
+        const v = out[k];
+        if (v !== undefined && v !== null) out[k] = Array.isArray(v) ? v.map(name) : name(v);
+      }
+      return out;
+    }) as T[];
+  }
+
+  private async loadUserNames(ids: number[]): Promise<void> {
+    const option = async (column: string, fallback: number) => {
+      try {
+        return (await this.searchOptions?.resolveField('User', `User.${column}`)) ?? fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const [idOpt, login, realname, firstname] = await Promise.all([
+      option('id', 2), option('name', 1), option('realname', 34), option('firstname', 9),
+    ]);
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const criteria: SearchCriterion[] = chunk.map((id, j) => ({
+        field: idOpt,
+        searchtype: 'equals',
+        value: id,
+        ...(j > 0 ? { link: 'OR' as const } : {}),
+      }));
+      try {
+        const page = await this.fetchPage<Record<string, unknown>>(
+          'User',
+          { criteria, forcedisplay: [idOpt, login, realname, firstname] },
+          0,
+          chunk.length - 1,
+          false
+        );
+        for (const r of page.data) {
+          const id = Number(r[String(idOpt)]);
+          const full = [r[String(firstname)], r[String(realname)]].filter((v) => typeof v === 'string' && v.trim()).join(' ');
+          const display = full || (typeof r[String(login)] === 'string' ? (r[String(login)] as string) : '');
+          if (Number.isInteger(id) && display) this.userNames.set(id, display);
+        }
+      } catch {
+        // names are a convenience: the ids stay
+      }
+    }
+  }
+
+  /**
+   * Search-option id of the itemtype's `id` column. GLPI only returns it
+   * when it is a displayed column (Ticket), and rows without it cannot be
+   * opened with glpi_get_item. Option 2 is the id of nearly every itemtype,
+   * used when the catalogue is unreadable.
+   */
+  private async idOption(itemtype: string): Promise<number> {
+    if (!this.searchOptions) return 2;
+    try {
+      return (await this.searchOptions.resolveField(itemtype, `${itemtype}.id`)) ?? 2;
+    } catch {
+      return 2;
+    }
+  }
+
+  private displayCache = new Map<string, Promise<number[] | undefined>>();
+
+  /**
+   * Columns GLPI shows by default for `itemtype`: the user's display
+   * preferences, else the global ones, for the session's interface, by rank.
+   * GLPI drops them as soon as forcedisplay is sent, so a search that adds
+   * the id column sends them too. undefined when they cannot be read.
+   */
+  async defaultColumns(itemtype: string): Promise<number[] | undefined> {
+    const session = (await this.session?.().catch(() => undefined)) ?? { interface: 'central' };
+    const cacheKey = `${session.interface}:${session.userId ?? 0}:${itemtype}`;
+    let cached = this.displayCache.get(cacheKey);
+    if (!cached) {
+      cached = (async () => {
+        const params = new URLSearchParams({ 'searchText[itemtype]': `^${itemtype}$`, range: '0-499' });
+        const { data } = await this.http.request<Array<Record<string, unknown>>>('DisplayPreference', { query: params });
+        const rows = (Array.isArray(data) ? data : []).filter(
+          (r) => r.itemtype === itemtype && (r.interface ?? 'central') === session.interface
+        );
+        const mine = rows.filter((r) => session.userId !== undefined && Number(r.users_id) === session.userId);
+        const chosen = mine.length ? mine : rows.filter((r) => Number(r.users_id) === 0);
+        return chosen.sort((x, y) => Number(x.rank) - Number(y.rank)).map((r) => Number(r.num));
+      })().catch(() => undefined);
+      this.displayCache.set(cacheKey, cached);
+    }
+    return cached;
+  }
+
+  /**
+   * forcedisplay for a row search: the caller's columns, or GLPI's default
+   * ones, with the id column first. Without the defaults (unreadable), the
+   * caller's list is sent unchanged and GLPI picks the columns as before.
+   */
+  private async columns(itemtype: string, forcedisplay: readonly number[] = []): Promise<number[]> {
+    const base = forcedisplay.length ? [...forcedisplay] : await this.defaultColumns(itemtype);
+    if (!base) return [...forcedisplay];
+    const idOption = await this.idOption(itemtype);
+    return base.includes(idOption) ? base : [idOption, ...base];
   }
 
   /**
@@ -266,7 +404,8 @@ export class GlpiSearch {
       if (i > 0 && c.link) params.append(`criteria[${i}][link]`, c.link);
     });
 
-    (options.forcedisplay ?? []).forEach((id, i) => {
+    const forcedisplay = mapKeys ? await this.columns(itemtype, options.forcedisplay) : [...(options.forcedisplay ?? [])];
+    forcedisplay.forEach((id, i) => {
       params.append(`forcedisplay[${i}]`, String(id));
     });
 

@@ -103,23 +103,9 @@ const actorId = (description?: string) => {
   return description ? schema.describe(description) : schema;
 };
 
-const myUserIdCache = new WeakMap<GlpiClient, Promise<number>>();
-
-/** User id of the session (getFullSession -> session.glpiID), resolved once per process and client. */
-export function resolveMyUserId(client: GlpiClient): Promise<number> {
-  let cached = myUserIdCache.get(client);
-  if (!cached) {
-    cached = client.getFullSession().then((full) => {
-      const raw = ((full as { session?: Record<string, unknown> } | undefined)?.session ?? {}).glpiID;
-      const n = Number(raw);
-      if (!Number.isInteger(n) || n <= 0) throw new Error('getFullSession returned no session.glpiID');
-      return n;
-    });
-    // A failed lookup is not cached: the next call retries.
-    cached.catch(() => myUserIdCache.delete(client));
-    myUserIdCache.set(client, cached);
-  }
-  return cached;
+/** User id of the session (getFullSession -> session.glpiID), read once per process (GlpiClient.sessionInfo). */
+export async function resolveMyUserId(client: GlpiClient): Promise<number> {
+  return (await client.sessionInfo()).userId;
 }
 
 async function actorValue(client: GlpiClient, value: number | 'me'): Promise<number> {
@@ -196,7 +182,8 @@ const searchTickets = defineTool({
       limit: pageLimit(q.limit),
       fetchAll: q.fetch_all,
       maxRows: q.max_rows,
-      sort: await resolveSearchSort(client, 'Ticket', q.sort),
+      // Without sort GLPI orders by id ascending: the advertised default is last update first.
+      sort: (await resolveSearchSort(client, 'Ticket', q.sort)) ?? (await f('date_mod')),
       order: q.order ?? 'DESC',
       expandDropdowns: true,
       isDeleted: q.is_deleted,

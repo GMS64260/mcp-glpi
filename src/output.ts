@@ -226,6 +226,7 @@ export const COMPACT_FIELDS: Record<string, readonly string[]> = {
   KnowbaseItem: ['id', 'name', 'is_faq', 'knowbaseitemcategories_id', 'users_id', 'view', 'date_creation', 'date_mod', 'answer'],
   Contract: ['id', 'name', 'num', 'contracttypes_id', 'begin_date', 'duration', 'notice', 'periodicity', 'renewal', 'entities_id', 'is_deleted', 'comment'],
   Supplier: ['id', 'name', 'suppliertypes_id', 'address', 'postcode', 'town', 'country', 'website', 'phonenumber', 'email', 'entities_id', 'is_deleted', 'comment'],
+  Contact: ['id', 'name', 'firstname', 'contacttypes_id', 'usertitles_id', 'phone', 'phone2', 'mobile', 'email', 'entities_id', 'is_deleted', 'comment'],
   Location: ['id', 'name', 'completename', 'locations_id', 'address', 'postcode', 'town', 'building', 'room', 'entities_id', 'comment'],
   Entity: ['id', 'name', 'completename', 'entities_id', 'level', 'email', 'phonenumber', 'comment'],
   Project: ['id', 'name', 'code', 'priority', 'projectstates_id', 'state', 'state_is_finished', 'projecttypes_id', 'projects_id', 'percent_done', 'auto_percent_done', 'plan_start_date', 'plan_end_date', 'real_start_date', 'real_end_date', 'users_id', 'groups_id', 'entities_id', 'is_recursive', 'date_mod', 'is_deleted', 'content', 'comment'],
