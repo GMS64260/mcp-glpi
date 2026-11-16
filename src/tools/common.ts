@@ -32,6 +32,16 @@ export const id = (description?: string) =>
 export const optId = (description?: string) =>
   described(z.preprocess(numericString, z.number().int().nonnegative()).optional(), description);
 
+/**
+ * Active entity: an id (0 = root) or "all". Numeric strings are coerced like
+ * every other id argument, so `{"entity_id": "3"}` switches entity 3.
+ */
+export const entityIdArg = (description?: string) =>
+  described(
+    z.preprocess(numericString, z.union([z.number().int().nonnegative(), z.literal('all')])),
+    description
+  );
+
 export const optInt = (description?: string) => described(z.preprocess(numericString, z.number().int()).optional(), description);
 
 export const optBool = (description?: string) => described(z.boolean().optional(), description);

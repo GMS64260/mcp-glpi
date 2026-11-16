@@ -7,7 +7,7 @@ import { z } from 'zod';
 import type { GlpiUser } from '../glpi-client.js';
 import { compactItem, listEnvelope, stripLinks, text } from '../output.js';
 import { defineTool, type ToolDef } from './registry.js';
-import { defined, id, listShape, optBool, optId, optStr, toListOptions, verbose } from './common.js';
+import { defined, entityIdArg, id, listShape, optBool, optId, optStr, toListOptions, verbose } from './common.js';
 
 const listUsers = defineTool({
   name: 'glpi_list_users',
@@ -173,9 +173,7 @@ const setActiveEntity = defineTool({
   annotations: { destructiveHint: false },
   description: 'Switch the active entity' + SHARED_SESSION_NOTE,
   inputSchema: {
-    entity_id: z
-      .union([z.number().int().min(0), z.literal('all')])
-      .describe('Entity id (0 = root), or "all"'),
+    entity_id: entityIdArg('Entity id (0 = root), or "all"'),
     is_recursive: optBool('With sub-entities'),
   },
   handler: async ({ client }, a) => {
