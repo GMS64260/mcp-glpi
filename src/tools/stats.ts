@@ -28,29 +28,39 @@ const ticketsStatsBy = defineTool({
   },
   handler: async ({ client }, a) => {
     const dimension = a.dimension ?? 'status';
+    // Search-option ids are resolved through the catalogue (stock GLPI ids are
+    // only the fallback): a renumbered option must not report zeros.
+    const [entityField, dateField] = await Promise.all([
+      ticketField(client, 'entity'),
+      ticketField(client, 'date'),
+    ]);
     const base: SearchCriterion[] = [];
-    if (a.entity_id !== undefined) base.push({ field: TICKET_FIELDS.entity, searchtype: 'equals', value: a.entity_id });
-    if (a.date_from) base.push({ field: TICKET_FIELDS.date, searchtype: 'morethan', value: a.date_from });
-    if (a.date_to) base.push({ field: TICKET_FIELDS.date, searchtype: 'lessthan', value: a.date_to });
+    if (a.entity_id !== undefined) base.push({ field: entityField, searchtype: 'equals', value: a.entity_id });
+    if (a.date_from) base.push({ field: dateField, searchtype: 'morethan', value: a.date_from });
+    if (a.date_to) base.push({ field: dateField, searchtype: 'lessthan', value: a.date_to });
     const withBase = (first: SearchCriterion): SearchCriterion[] => [first, ...base.map((b) => ({ ...b, link: 'AND' as const }))];
 
     if (dimension === 'delays') return text(await delayStats(client, base));
 
     const counts: Record<string, number> = {};
     if (dimension === 'status') {
+      const statusField = await ticketField(client, 'status');
       for (const [statusId, label] of Object.entries(TICKET_STATUS)) {
         counts[label] = await client.search.count(
           'Ticket',
-          withBase({ field: TICKET_FIELDS.status, searchtype: 'equals', value: Number(statusId) })
+          withBase({ field: statusField, searchtype: 'equals', value: Number(statusId) })
         );
       }
     } else if (dimension === 'category') {
+      const categoryField = await ticketField(client, 'category');
       const cats = await client.getCategories({ range: '0-199' });
       for (const cat of cats) {
-        const n = await client.search.count('Ticket', withBase({ field: TICKET_FIELDS.category, searchtype: 'equals', value: cat.id }));
+        const n = await client.search.count('Ticket', withBase({ field: categoryField, searchtype: 'equals', value: cat.id }));
         if (n > 0) counts[cat.completename ?? cat.name] = n;
       }
     } else if (dimension === 'technician') {
+      // The actor options (requester 4, technician 5, observer 66) share one
+      // uid, so they keep GLPI's standard ids: see TICKET_FIELD_REFS.
       const users = await client.getUsers({ range: '0-199', is_active: true });
       for (const u of users) {
         const n = await client.search.count('Ticket', withBase({ field: TICKET_FIELDS.technician_user, searchtype: 'equals', value: u.id }));
@@ -59,16 +69,15 @@ const ticketsStatsBy = defineTool({
     } else if (dimension === 'entity') {
       const entities = await client.getEntities({ range: '0-99' });
       for (const e of entities) {
-        const n = await client.search.count('Ticket', withBase({ field: TICKET_FIELDS.entity, searchtype: 'equals', value: e.id }));
+        const n = await client.search.count('Ticket', withBase({ field: entityField, searchtype: 'equals', value: e.id }));
         if (n > 0) counts[e.completename ?? e.name] = n;
       }
     } else {
       const buckets = monthBuckets(a.date_from, a.date_to);
-      const dateField = await ticketField(client, 'date');
       for (const bucket of buckets) {
         const c = monthCriteria(bucket, dateField);
         if (a.entity_id !== undefined) {
-          c.push({ field: await ticketField(client, 'entity'), searchtype: 'equals', value: a.entity_id, link: 'AND' });
+          c.push({ field: entityField, searchtype: 'equals', value: a.entity_id, link: 'AND' });
         }
         counts[bucket.key] = await client.search.count('Ticket', c);
       }
