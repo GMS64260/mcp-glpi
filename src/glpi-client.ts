@@ -1387,6 +1387,19 @@ export class GlpiClient {
 
   // ---- STATISTICS (F9 fix: use count probes instead of fetching all then filtering) ----
 
+  /**
+   * Search-option id of a Ticket column, resolved through the catalogue; the
+   * stock GLPI id when the catalogue cannot be read. Same contract as
+   * tool-helpers `ticketField`, for the callers that live in the client.
+   */
+  private async ticketSearchField(ref: string, fallback: number): Promise<number> {
+    try {
+      return (await this.searchOptions.resolveField('Ticket', ref)) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
   async getTicketStats(filters: {
     entity_id?: number;
     date_from?: string;
@@ -1399,15 +1412,21 @@ export class GlpiClient {
     solved: number;
     closed: number;
   }> {
+    // Resolved, not hardcoded: a renumbered search option would report zeros.
+    const [statusField, entityField, dateField] = await Promise.all([
+      this.ticketSearchField('Ticket.status', 12),
+      this.ticketSearchField('Ticket.Entity.completename', 80),
+      this.ticketSearchField('Ticket.date', 15),
+    ]);
     const baseCriteria: SearchCriterion[] = [];
     if (filters.entity_id !== undefined) {
-      baseCriteria.push({ field: 80, searchtype: 'equals', value: filters.entity_id, link: 'AND' });
+      baseCriteria.push({ field: entityField, searchtype: 'equals', value: filters.entity_id, link: 'AND' });
     }
     if (filters.date_from) {
-      baseCriteria.push({ field: 15, searchtype: 'morethan', value: filters.date_from, link: 'AND' });
+      baseCriteria.push({ field: dateField, searchtype: 'morethan', value: filters.date_from, link: 'AND' });
     }
     if (filters.date_to) {
-      baseCriteria.push({ field: 15, searchtype: 'lessthan', value: filters.date_to, link: 'AND' });
+      baseCriteria.push({ field: dateField, searchtype: 'lessthan', value: filters.date_to, link: 'AND' });
     }
 
     const counts: Record<string, number> = {};
@@ -1420,7 +1439,7 @@ export class GlpiClient {
       closed: 6,
     })) {
       const criteria: SearchCriterion[] = [
-        { field: 12, searchtype: 'equals', value: statusId },
+        { field: statusField, searchtype: 'equals', value: statusId },
         ...baseCriteria.map((c, i) => ({ ...c, link: i === 0 ? 'AND' as const : c.link })),
       ];
       counts[label] = await this.search.count('Ticket', criteria);
