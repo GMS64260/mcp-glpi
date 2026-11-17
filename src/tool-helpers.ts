@@ -5,6 +5,7 @@
 
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
+import { formatGlpiDate } from './glpi-client.js';
 import type { GlpiClient, TicketRelation } from './glpi-client.js';
 import type { SearchCriterion, SearchLink, SearchType } from './search.js';
 import type { SearchOptionsCatalogue } from './search-options.js';
@@ -250,14 +251,6 @@ export interface MonthBucket {
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
-
-/** Local-time "YYYY-MM-DD HH:MM:SS" (GLPI stores server-local datetimes). */
-export function formatGlpiDate(d: Date): string {
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  );
-}
 
 /** Year + month (0-based) of a "YYYY-MM[-DD...]" string, without Date/UTC parsing. */
 function parseYearMonth(value: string): { y: number; m: number } {

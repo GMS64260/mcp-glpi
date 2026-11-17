@@ -4,14 +4,13 @@
  */
 
 import { z } from 'zod';
-import type { GlpiClient } from '../glpi-client.js';
+import { type GlpiClient, formatGlpiDate } from '../glpi-client.js';
 import type { SearchCriterion } from '../search.js';
 import { ArgumentError } from '../errors.js';
 import { type ItilItemtype, VALIDATION_STATUS } from '../itil.js';
 import { cleanTextFields, compactItem, pageLimit, stripLinks, text } from '../output.js';
 import {
   OPEN_STATUS_VALUE,
-  formatGlpiDate,
   parseValidationStatus,
   resolveLinkArgs,
   resolveUploadSource,
