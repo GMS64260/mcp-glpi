@@ -124,7 +124,7 @@ See [Security notes](#security-notes) before exposing the port.
 | `GLPI_MAX_CONCURRENCY` | `8` | Maximum GLPI calls in flight for the whole process. Positive integer (`0` is refused at startup) |
 | `GLPI_DEBUG` | off | Any value: log retries and re-authentication to stderr, keep raw search options in memory |
 | `GLPI_TOOLSETS` | `all` | Comma-separated toolsets to register on top of `core`, which is always registered (see [Tool catalogue](#tool-catalogue)); unknown names are ignored with a warning |
-| `GLPI_READ_ONLY` | off | `1`/`true`/`yes`/`on`: register only the 21 read-only tools and the 2 `session` switches, which change the session context, not GLPI data (23) |
+| `GLPI_READ_ONLY` | off | `1`/`true`/`yes`/`on`: register only the 22 read-only tools and the 2 `session` switches, which change the session context, not GLPI data (24) |
 | `GLPI_LEGACY_TOOLS` | off | `1`/`true`/`yes`/`on`: also list the 50 v3 aliases in `tools/list` (they are callable either way) |
 | `GLPI_UPLOAD_DIR` | none | Directory `glpi_upload_document` may read `file_path` from. Unset: uploads by path are refused, `content_base64` still works |
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
@@ -172,7 +172,7 @@ status 2; set `GLPI_DEBUG` for the stack trace of other startup failures.
 
 ## Tool catalogue
 
-47 tools in 9 toolsets: `core`, `tickets`, `itil`, `assets`, `users`,
+48 tools in 9 toolsets: `core`, `tickets`, `itil`, `assets`, `users`,
 `admin`, `session`, `kb`, `stats`. **`core`** (`glpi_list_items`,
 `glpi_get_item`, `glpi_search_v2`, `glpi_count`, `glpi_list_search_options`,
 `glpi_get_session_info`) is always registered, whatever `GLPI_TOOLSETS` says:
@@ -276,6 +276,7 @@ see [Correcting the timeline](#tickets-19)).
 |---|---|---|---|
 | `glpi_list_items` | core | `itemtype`, paging, `sort`, `order`, `search_text`, `is_deleted`, `expand_dropdowns`, `fields`, `verbose` | Compact rows of one itemtype; `search_text` = `{column: "substring"}`, `"^x$"` for exact |
 | `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, the project sections below, and `visibility` on a `KnowbaseItem` |
+| `glpi_get_item_logs` | | `itemtype`, `id`, paging | History (`Log`) of one item, one page at a time, with `totalcount`. Use it instead of `with: ["logs"]` on a long history: `with_logs` returns the whole history in one response, which can exceed PHP `memory_limit` and answer 500 |
 | `glpi_create_item` | W | `itemtype`, `input` | Create from GLPI column values, e.g. `{"name":"PC-42","locations_id":3}`. Without `entities_id` the item lands in the active entity, and the result names it (`entities_id`) |
 | `glpi_update_item` | W | `itemtype`, `id`, `input` | Change the given columns; `Computer`, `Project` and `ProjectTask` accept only their usual fields, `Ticket` / `Problem` / `Change` exactly those of `glpi_update_ticket` / `glpi_update_problem` / `glpi_update_change`; links cannot be updated (delete, then create) |
 | `glpi_delete_item` | W | `itemtype`, `id`, `purge`, `confirm_id` | Trash, or purge with `confirm_id` = `id` |
@@ -637,7 +638,7 @@ The 37 other v3 names are unchanged v4 tools.
 
 ## Security notes
 
-- **Writes change production data.** `GLPI_READ_ONLY=1` registers only the 21
+- **Writes change production data.** `GLPI_READ_ONLY=1` registers only the 22
   read-only tools and the 2 session switches (`glpi_set_active_entity`,
   `glpi_set_active_profile`: they change the session context, not GLPI
   data); write calls then fail at protocol level. Without it, every
@@ -680,9 +681,9 @@ npm start            # node dist/index.js (stdio); npm start -- --http for HTTP
 ```
 
 `npm run measure` builds the catalogue in-process and prints its size, the
-largest tools and where the characters go. Today: 46 tools, 25,572
-characters (about 7.1k tokens); 23 tools and 12,995 characters with
-`GLPI_READ_ONLY=1`; instructions 2,458 characters. `test/server.test.ts` pins
+largest tools and where the characters go. Today: 48 tools, 26,760
+characters (about 7.4k tokens); 24 tools and 13,294 characters with
+`GLPI_READ_ONLY=1`; instructions 2,465 characters. `test/server.test.ts` pins
 the ceilings.
 
 CI (`.github/workflows/ci.yml`) builds, lints and tests on Node 20 and 22,

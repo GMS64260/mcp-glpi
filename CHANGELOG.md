@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`glpi_get_item_logs`** (`assets`): the history (`Log`) of one item, one
+  page at a time (`GET {itemtype}/{id}/Log?range=`), with `totalcount` from
+  `Content-Range`. `glpi_get_item` `with: ["logs"]` asks for `with_logs`,
+  which returns the whole history in one response; on an item with tens of
+  thousands of rows that exhausts PHP `memory_limit` and GLPI answers 500.
+  48 tools, 26,760 characters; 13,294 with `GLPI_READ_ONLY=1` (ceilings
+  raised to 27,000 and 13,500).
+
 ## 4.2.0 — 2026-11-16
 
 What a review of another GLPI MCP server suggested, plus four bugs found
