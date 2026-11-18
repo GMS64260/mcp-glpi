@@ -12,7 +12,7 @@ import { ITIL_UPDATE_FIELDS } from './itil.js';
 import { TICKET_UPDATE_FIELDS, checkPurge } from './tickets.js';
 import { readKbVisibility } from './kb.js';
 import { PROJECT_WITH, projectStatesFor, readProjectSections, withProjectState } from './projects.js';
-import { fields, id, listShape, optBool, optInt, textShape, toListOptions, verbose } from './common.js';
+import { fields, id, listShape, optBool, optInt, pageShape, textShape, toListOptions, verbose } from './common.js';
 
 const invalid = (message: string) => new ArgumentError(message);
 
@@ -227,6 +227,29 @@ const getItem = defineTool({
   },
 });
 
+/**
+ * History (Log) of one item, a page at a time: `GET {itemtype}/{id}/Log?range=`.
+ * `glpi_get_item` with `logs` asks GLPI for the whole history in one
+ * response (`with_logs`), which exhausts PHP memory_limit on items with tens
+ * of thousands of rows and answers 500.
+ */
+const getItemLogs = defineTool({
+  name: 'glpi_get_item_logs',
+  title: 'Get item history',
+  toolset: 'assets',
+  description: 'History (log) of one item, one page at a time; totalcount gives the size. Prefer it to glpi_get_item with logs.',
+  inputSchema: {
+    itemtype: itemtypeGetSchema,
+    id: id(),
+    ...pageShape,
+  },
+  handler: async ({ client }, a) => {
+    const { opts, start } = toListOptions({ start: a.start, limit: a.limit });
+    const page = await client.getItemsPage<Record<string, unknown>>(`${a.itemtype}/${a.id}/Log`, opts);
+    return text(listEnvelope(page.items, start, page.totalcount));
+  },
+});
+
 const createItem = defineTool({
   name: 'glpi_create_item',
   title: 'Create item',
@@ -296,4 +319,4 @@ const deleteItem = defineTool({
   },
 });
 
-export const ITEM_TOOLS: ToolDef[] = [listItems, getItem, createItem, updateItem, deleteItem];
+export const ITEM_TOOLS: ToolDef[] = [listItems, getItem, getItemLogs, createItem, updateItem, deleteItem];

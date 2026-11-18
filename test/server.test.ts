@@ -36,7 +36,7 @@ const EXPECTED_TOOLS = [
   'glpi_list_problems', 'glpi_get_problem', 'glpi_create_problem', 'glpi_update_problem',
   'glpi_list_changes', 'glpi_get_change', 'glpi_create_change', 'glpi_update_change',
   // items
-  'glpi_list_items', 'glpi_get_item', 'glpi_create_item', 'glpi_update_item', 'glpi_delete_item',
+  'glpi_list_items', 'glpi_get_item', 'glpi_get_item_logs', 'glpi_create_item', 'glpi_update_item', 'glpi_delete_item',
   // users / session / admin
   'glpi_list_users', 'glpi_get_user', 'glpi_find_user', 'glpi_create_user', 'glpi_add_user_to_group',
   'glpi_get_session_info', 'glpi_set_active_entity', 'glpi_set_active_profile',
@@ -159,10 +159,11 @@ test('catalogue size stays under its ceiling', async () => {
   // tools/list goes with every request of a session: 44,291 chars in the
   // first v4 cut, 41,921 in v3. Raise these only with a reason.
   // 4.2.0: 26,000 -> 26,500 for glpi_merge_tickets (GLPI's merge, ~560 chars).
+  // 27,000 and 13,500 (read-only) for glpi_get_item_logs (paged history, ~470 chars).
   const full = JSON.stringify({ tools: await listNames() }).length;
-  assert.ok(full <= 26_500, `full catalogue: ${full} chars`);
+  assert.ok(full <= 27_000, `full catalogue: ${full} chars`);
   const readOnly = JSON.stringify({ tools: await listNames(parseRegistryOptions({ GLPI_READ_ONLY: '1' })) }).length;
-  assert.ok(readOnly <= 13_000, `GLPI_READ_ONLY=1 catalogue: ${readOnly} chars`);
+  assert.ok(readOnly <= 13_500, `GLPI_READ_ONLY=1 catalogue: ${readOnly} chars`);
   assert.ok(INSTRUCTIONS.length <= 2_500, `instructions: ${INSTRUCTIONS.length} chars`);
 });
 
@@ -270,7 +271,7 @@ test('GLPI_READ_ONLY=1 lists the read-only tools and the session switches; write
     .map((d) => d.name)
     .sort();
   assert.deepEqual(tools.map((t) => t.name).sort(), expected);
-  assert.equal(expected.length, 23);
+  assert.equal(expected.length, 24);
   const sessionSwitches = ['glpi_set_active_entity', 'glpi_set_active_profile'];
   for (const t of tools) {
     if (sessionSwitches.includes(t.name)) {
