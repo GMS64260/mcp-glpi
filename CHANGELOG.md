@@ -1,16 +1,117 @@
 # Changelog
 
-## Unreleased
+## 4.3.0 — 2026-11-26
+
+Issue #21: what a management review needs to read and write around tickets,
+problems and changes, and two bugs it uncovered that could do harm; plus a
+paged item history (PR #20). One new tool: 48 tools, 27,303 characters
+(ceiling raised from 26,500 to 27,500 for the history tool, the timeline
+paging, the actor modes and change validations); 13,399 with
+`GLPI_READ_ONLY=1` (ceiling raised from 13,000 to 13,500).
+Checked in read-only against a live GLPI 11.0.11; the write paths are
+covered by the tests only.
+
+### Fixed
+
+- **Validation codes were shifted by one.** GLPI's are 1 None, 2 Waiting,
+  3 Accepted, 4 Refused (`CommonITILValidation`, GLPI 10 and 11); the server
+  used 1 Waiting, 2 Granted, 3 Refused. So:
+  - `glpi_set_validation_status` with `status: 3` ("Refused") **accepted**
+    the validation, and `status: 2` ("Granted") left it waiting. It now takes
+    `status: "accepted"` or `"refused"` and sends 3 or 4. Numbers are
+    refused with an explanation: a caller following the old documentation
+    cannot be told apart from one following GLPI's codes, and an approval
+    must not be guessed. A refusal needs `comment_validation`, as in GLPI.
+    The library method `setTicketValidationStatus` takes 3 or 4 only.
+  - the tool always wrote to `TicketValidation`, so the id of a change's
+    validation (read from the change's timeline) answered an unrelated
+    ticket validation. It takes `itemtype` (`Ticket`, `Change`).
+  - GLPI answers OK to an account that is not the approver and keeps the
+    validation as it was; the tool reported success. The answer is now read
+    back, and an unrecorded one is an error.
+  - an accepted validation read as "Refused" in the timeline, and a waiting
+    one as "Granted". Labels now follow GLPI, and `global_validation` of a
+    ticket or change gets a `global_validation_label`.
+  - anyone who answered a validation through this tool before 4.3.0 should
+    check the result in GLPI.
+- **Lists read below an item stopped after one page without saying so.**
+  When no range is asked GLPI answers one page: the "results per page"
+  setting of the account, 15 by default and often 50 (15 on the GLPI 11 this
+  was checked on). A ticket with more followups than that lost the most
+  recent ones in `glpi_get_ticket_timeline` and in `glpi://ticket/{id}`; a
+  project lost tasks; and `glpi_merge_tickets` copied only the first page
+  of a source's followups or tasks before trashing it. These lists are now
+  read to the end, 200 rows per request.
+- **Search rows of link tables came back empty or with their id only**
+  (`Problem_Ticket`, `Change_Ticket`, `Itil_Project`, `ChangeValidation`...):
+  GLPI has no display preference for them. The columns of the search-option
+  catalogue are asked for instead (all the displayable ones up to 15, else
+  the itemtype's own columns); if GLPI refuses them the search is retried as
+  before. A profile that cannot read the display preferences keeps GLPI's
+  own choice of columns.
+- **Search rows of an itemtype without an id option had no `id`**
+  (`ProjectTask`; `ChangeValidation` on GLPI 10, where option 2, taken for
+  the id, is a comment). Ids now come from GLPI's `withindexes`, unless the
+  search is sorted on a column.
+- `ProjectTask` search rows: the parent task is `parent_task`, not
+  `name_13`.
+- Linked items of a project whose name cannot be read (trashed, another
+  entity, no right) say why under `unreadable` instead of a bare
+  `name: null`.
 
 ### Added
 
-- **`glpi_get_item_logs`** (`assets`): the history (`Log`) of one item, one
-  page at a time (`GET {itemtype}/{id}/Log?range=`), with `totalcount` from
-  `Content-Range`. `glpi_get_item` `with: ["logs"]` asks for `with_logs`,
-  which returns the whole history in one response; on an item with tens of
-  thousands of rows that exhausts PHP `memory_limit` and GLPI answers 500.
-  48 tools, 26,760 characters; 13,294 with `GLPI_READ_ONLY=1` (ceilings
-  raised to 27,000 and 13,500).
+- **`glpi_get_item_logs`** (`assets`, PR #20 by @noakky): the history (`Log`)
+  of one item, one page at a time (`GET {itemtype}/{id}/Log?range=`), with
+  `totalcount` from `Content-Range`. `glpi_get_item` `with: ["logs"]` asks
+  for `with_logs`, which returns the whole history in one response; on an
+  item with tens of thousands of rows that exhausts PHP `memory_limit` and
+  GLPI answers 500.
+- **Actors and links** on `glpi_get_ticket`, `glpi_get_problem` and
+  `glpi_get_change`: `actors` (users, groups and suppliers by role, with
+  ids and names) and `links` (a ticket's problems, changes and linked
+  tickets; a problem's tickets and changes; a change's tickets and
+  problems; each with name and status). Until now a problem or a change
+  showed nobody in charge, and a ticket did not show its technician.
+  A list GLPI refuses is named in `_errors`.
+- **`glpi_assign_ticket`** takes `itemtype` (`Ticket`, `Change`, `Problem`)
+  and `mode`: `add` (default, as before), `replace` (hand over: the new
+  actor is added, then the others of that role leave; a requester known by
+  e-mail only stays) and `remove`. A failure after the first write says
+  what was already applied.
+- **`glpi_get_ticket_timeline` is paged**: `start`, `limit` (default 50),
+  `order` (`DESC` for the newest first), with `totalcount` and `next_start`.
+- **Project tasks by person in charge**: `glpi_get_item` on a `User` or a
+  `Group` takes `with: ["project_tasks"]`, the tasks whose team holds it.
+  GLPI 10 cannot search tasks by team, and its "creator" option attributes
+  every task to whoever typed it in.
+- `glpi_get_problem` returns the analysis (`impactcontent`, `causecontent`,
+  `symptomcontent`) and `glpi_get_change` the plans (`controlistcontent`,
+  `rolloutplancontent`, `backoutplancontent`, `checklistcontent`), as plain
+  text.
+- `status_label` on `TicketValidation` / `ChangeValidation` search rows.
+- A project's `counts` split `itil` into `tickets`, `changes` and
+  `problems` when one of these sections is read.
+
+### Changed
+
+- `glpi_get_ticket_timeline` returns `{itemtype, id, totalcount, start,
+  count, next_start, timeline}`; a call without `limit` returns the first 50
+  entries.
+- `glpi_get_ticket` makes seven more GLPI calls for `actors` and `links`,
+  `glpi_get_problem` and `glpi_get_change` five, plus the name lookups
+  (users in one search, kept for the life of the process; groups and
+  suppliers kept one hour).
+- `@modelcontextprotocol/sdk` 1.32.2 (was 1.26.0), which fixes a memory
+  exhaustion in the HTTP transport (GHSA-46jr-4wx8-v453), and its
+  dependencies updated. `npm audit` still reports zod 3 (GHSA-mrhx-c7xc-m3w5):
+  the fix is zod 4, a migration of its own.
+
+### Already there (asked in #21)
+
+- Rescheduling a task: `glpi_update_item` has taken `TicketTask`,
+  `ChangeTask` and `ProblemTask` (`begin`, `end`, `state`...) since 4.2.0.
+- Requester and technician names instead of ids in search rows: 4.2.0.
 
 ## 4.2.0 — 2026-11-16
 

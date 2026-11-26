@@ -59,11 +59,23 @@ export const CHANGE_STATUS: Record<number, string> = {
   14: 'Cancelled',
 };
 
+/**
+ * `CommonITILValidation` constants (GLPI 10 and 11): NONE=1, WAITING=2,
+ * ACCEPTED=3, REFUSED=4. Used by a validation's `status` and by the
+ * `global_validation` of a ticket or change. Until 4.2.0 this table was
+ * shifted by one (1 Waiting, 2 Granted, 3 Refused), so an accepted
+ * validation read as refused and answering "refused" accepted it.
+ */
 export const VALIDATION_STATUS: Record<number, string> = {
-  1: 'Waiting',
-  2: 'Granted',
-  3: 'Refused',
+  1: 'None',
+  2: 'Waiting',
+  3: 'Accepted',
+  4: 'Refused',
 };
+
+export const VALIDATION_ACCEPTED = 3;
+export const VALIDATION_REFUSED = 4;
+export type ValidationAnswer = typeof VALIDATION_ACCEPTED | typeof VALIDATION_REFUSED;
 
 export const TICKET_URGENCY: Record<number, string> = {
   1: 'Very low',

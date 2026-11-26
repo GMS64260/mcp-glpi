@@ -198,11 +198,16 @@ test('requireId rejects missing or malformed ids', () => {
   assert.throws(() => requireId({ id: 'abc' }, 'id'), isInvalid(/positive integer/));
 });
 
-test('parseValidationStatus accepts 2/3 as numbers or strings', () => {
-  assert.equal(parseValidationStatus('2'), 2);
-  assert.equal(parseValidationStatus(3), 3);
-  assert.throws(() => parseValidationStatus('1'), isInvalid(/2 \(granted\) or 3/));
-  assert.throws(() => parseValidationStatus(undefined), isInvalid(/2 \(granted\) or 3/));
+test('parseValidationStatus takes "accepted" / "refused" and refuses the ambiguous numbers', () => {
+  // GLPI: WAITING 2, ACCEPTED 3, REFUSED 4 (CommonITILValidation).
+  assert.equal(parseValidationStatus('accepted'), 3);
+  assert.equal(parseValidationStatus(' Refused '), 4);
+  assert.equal(parseValidationStatus('granted'), 3);
+  assert.equal(parseValidationStatus('reject'), 4);
+  // Until 4.2.0 the tool documented 2 = granted, 3 = refused: a number cannot be trusted.
+  for (const legacy of [2, 3, 4, '2', '3', undefined, 'waiting']) {
+    assert.throws(() => parseValidationStatus(legacy), isInvalid(/"accepted" or "refused"/));
+  }
 });
 
 // --- upload -----------------------------------------------------------------

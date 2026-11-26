@@ -127,7 +127,8 @@ test('glpi_get_item Project with tasks, team, tickets, changes: compact rows, na
   ]);
   assert.equal(p._tasks[1].content, 'Weekend');
   assert.equal(p._tasks[0].links, undefined);
-  assert.deepEqual(p.counts, { tasks: 2, team: 2, itil: 2, open_tasks: 1 });
+  // itil counts every Itil_Project link; tickets / changes / problems split it once the links are read.
+  assert.deepEqual(p.counts, { tasks: 2, team: 2, itil: 2, open_tasks: 1, tickets: 1, changes: 1, problems: 0 });
   assert.deepEqual(p._team, [
     { id: 1, itemtype: 'User', items_id: 7, name: 'Jane Doe (jdoe)' },
     { id: 2, itemtype: 'Group', items_id: 3, name: 'Network team' },

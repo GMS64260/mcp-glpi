@@ -63,8 +63,9 @@ test('addTicketValidation sends submission_date in local time', async () => {
     users_id_validate: 3,
     comment_submission: '',
     submission_date: LOCAL,
-    status: 1,
   });
+  // GLPI sets WAITING itself; 1 is NONE, not "waiting".
+  assert.equal(calls[0].body?.input.status, undefined);
 });
 
 test('addTicketValidation keeps an explicit submission_date as given', async () => {
@@ -82,7 +83,7 @@ test('setTicketValidationStatus sends validation_date in local time', async () =
   const calls = installFetch();
   mock.timers.enable({ apis: ['Date'], now: NOW.getTime() });
   try {
-    await client().setTicketValidationStatus(5, 2, 'agreed');
+    await client().setTicketValidationStatus(5, 3, 'agreed');
   } finally {
     mock.timers.reset();
   }
@@ -91,7 +92,7 @@ test('setTicketValidationStatus sends validation_date in local time', async () =
   assert.equal(calls[0].path, '/apirest.php/TicketValidation/5');
   assert.deepEqual(calls[0].body?.input, {
     id: 5,
-    status: 2,
+    status: 3,
     comment_validation: 'agreed',
     validation_date: LOCAL,
   });

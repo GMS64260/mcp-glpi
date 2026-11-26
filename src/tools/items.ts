@@ -11,7 +11,7 @@ import { advertisedAs, defineTool, type ToolDef } from './registry.js';
 import { ITIL_UPDATE_FIELDS } from './itil.js';
 import { TICKET_UPDATE_FIELDS, checkPurge } from './tickets.js';
 import { readKbVisibility } from './kb.js';
-import { PROJECT_WITH, projectStatesFor, readProjectSections, withProjectState } from './projects.js';
+import { MEMBER_TASKS_WITH, PROJECT_WITH, projectStatesFor, readMemberTasks, readProjectSections, withProjectState } from './projects.js';
 import { fields, id, listShape, optBool, optInt, pageShape, textShape, toListOptions, verbose } from './common.js';
 
 const invalid = (message: string) => new ArgumentError(message);
@@ -66,8 +66,8 @@ export const WITH_FLAGS = [
   'tickets', 'problems', 'changes', 'logs',
 ] as const;
 
-/** `with` values: GLPI's flags, the project sections (projects.ts), KB visibility (kb.ts). */
-export const WITH_VALUES = [...WITH_FLAGS, ...PROJECT_WITH, 'visibility'] as const;
+/** `with` values: GLPI's flags, the project sections and a member's tasks (projects.ts), KB visibility (kb.ts). */
+export const WITH_VALUES = [...WITH_FLAGS, ...PROJECT_WITH, 'visibility', MEMBER_TASKS_WITH] as const;
 const PROJECT_ONLY = new Set<string>(PROJECT_WITH);
 
 const TASK_UPDATE_FIELDS = [
@@ -195,7 +195,7 @@ const getItem = defineTool({
   title: 'Get item',
   toolset: 'core',
   description:
-    'One item, compact, plus related data (with). Project: state, counts, tasks, team...; KnowbaseItem: visibility. Refused parts go to _errors.',
+    'One item, compact, plus related data (with). Project: tasks, team...; User/Group: project_tasks; KnowbaseItem: visibility. Refused parts: _errors.',
   inputSchema: {
     itemtype: itemtypeGetSchema,
     id: id(),
@@ -210,6 +210,8 @@ const getItem = defineTool({
     if (!isProject && misplaced.length) throw invalid(`with ${misplaced.join(', ')}: Project only`);
     const visibility = flags.delete('visibility');
     if (visibility && a.itemtype !== 'KnowbaseItem') throw invalid('with visibility: KnowbaseItem only');
+    const memberTasks = flags.delete(MEMBER_TASKS_WITH);
+    if (memberTasks && a.itemtype !== 'User' && a.itemtype !== 'Group') throw invalid(`with ${MEMBER_TASKS_WITH}: User or Group only`);
     const notForTask = misplaced.filter((f) => f !== 'team');
     if (a.itemtype === 'ProjectTask' && notForTask.length) throw invalid(`with ${notForTask.join(', ')}: Project only (ProjectTask takes team, tickets)`);
     const states = await projectStatesFor(client, a.itemtype);
@@ -219,7 +221,9 @@ const getItem = defineTool({
       ? readProjectSections(client, a.itemtype as 'Project' | 'ProjectTask', a.id, flags, states ?? [], a)
       : visibility
         ? readKbVisibility(client, a.id)
-        : Promise.resolve({});
+        : memberTasks
+          ? readMemberTasks(client, a.itemtype as 'User' | 'Group', a.id, a)
+          : Promise.resolve({});
     const opts: GetOptions = {};
     for (const flag of flags) (opts as Record<string, boolean>)[`with_${flag}`] = true;
     const [item, extra] = await Promise.all([client.getItem<Record<string, unknown>>(a.itemtype, a.id, opts), sections]);

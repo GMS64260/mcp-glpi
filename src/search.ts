@@ -9,7 +9,7 @@
  *   - Optional sort + order.
  */
 
-import { GlpiHttp } from './http.js';
+import { GlpiError, GlpiHttp } from './http.js';
 import type { SearchOptionsCatalogue, SearchOptionsCache } from './search-options.js';
 
 export type SearchType =
@@ -68,6 +68,8 @@ export interface SearchResponse<T = Record<string, unknown>> {
 }
 
 const DEFAULT_PAGE = 100;
+/** Columns asked for when GLPI has no display preference for the itemtype (see catalogueColumns). */
+export const CATALOGUE_COLUMNS_MAX = 15;
 const DEFAULT_MAX_ROWS = 1000;
 
 /**
@@ -118,6 +120,8 @@ export const FRIENDLY_SEARCH_KEYS: Record<string, Record<number, readonly [strin
   },
   Change: ITIL_COMMON_KEYS,
   Problem: ITIL_COMMON_KEYS,
+  // Option 13 is the parent task, with the uid of the task's own name (1): it came back as "name_13".
+  ProjectTask: { 13: ['parent_task', 'name'] },
 };
 
 function friendlyKey(itemtype: string, optionId: number | undefined, field: string | undefined): string | undefined {
@@ -198,6 +202,24 @@ export function mapRowKeys<T = Record<string, unknown>>(
   });
 }
 
+/**
+ * Rows of a `withindexes` search, `{ "12": {...}, "15": {...} }`, as a list
+ * with `id`. GLPI chooses which rows make the page; inside the page they
+ * come in id order (descending with order DESC), which is GLPI 11's own
+ * order when no sort is asked (GLPI 10 sorts on option 1). A plain list (a GLPI that ignored the parameter) is
+ * returned as it is, without ids, rather than numbered by position.
+ */
+function rowsById<T>(data: unknown, order?: 'ASC' | 'DESC'): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (!data || typeof data !== 'object') return [];
+  const entries = Object.entries(data as Record<string, unknown>)
+    .map(([key, row]) => [Number(key), row] as const)
+    .filter(([key, row]) => Number.isInteger(key) && row !== null && typeof row === 'object')
+    .sort((x, y) => x[0] - y[0]);
+  if (order === 'DESC') entries.reverse();
+  return entries.map(([key, row]) => ({ id: key, ...(row as Record<string, unknown>) }) as T);
+}
+
 export class GlpiSearch {
   /**
    * @param searchOptions catalogue used to rename row keys (numeric option
@@ -264,6 +286,19 @@ export class GlpiSearch {
     }) as T[];
   }
 
+  /** Display names ("First Last", else login) of users by id; ids GLPI does not return are absent. */
+  async userDisplayNames(ids: readonly number[]): Promise<Map<number, string>> {
+    const wanted = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+    const missing = wanted.filter((id) => !this.userNames.has(id));
+    if (missing.length) await this.loadUserNames(missing);
+    const out = new Map<number, string>();
+    for (const id of wanted) {
+      const name = this.userNames.get(id);
+      if (name) out.set(id, name);
+    }
+    return out;
+  }
+
   private async loadUserNames(ids: number[]): Promise<void> {
     const option = async (column: string, fallback: number) => {
       try {
@@ -306,15 +341,43 @@ export class GlpiSearch {
   /**
    * Search-option id of the itemtype's `id` column. GLPI only returns it
    * when it is a displayed column (Ticket), and rows without it cannot be
-   * opened with glpi_get_item. Option 2 is the id of nearly every itemtype,
-   * used when the catalogue is unreadable.
+   * opened with glpi_get_item. Usually option 2, but not everywhere
+   * (TicketValidation: 9 on GLPI 11, none on GLPI 10, where 2 is a comment):
+   * undefined when the catalogue has no such option, 2 when it is unreadable.
    */
-  private async idOption(itemtype: string): Promise<number> {
+  private async idOption(itemtype: string): Promise<number | undefined> {
     if (!this.searchOptions) return 2;
     try {
-      return (await this.searchOptions.resolveField(itemtype, `${itemtype}.id`)) ?? 2;
+      const catalogue = await this.searchOptions.get(itemtype);
+      if (catalogue.byId.size === 0) return 2; // nothing listed: as good as unreadable
+      const byUid = catalogue.byUid.get(`${itemtype}.id`);
+      if (byUid) return byUid.id;
+      const second = catalogue.byId.get(2);
+      return second?.field === 'id' && (!second.uid || second.uid.split('.').length === 2) ? 2 : undefined;
     } catch {
       return 2;
+    }
+  }
+
+  /**
+   * Columns for an itemtype GLPI has no display preference for (link tables
+   * such as Problem_Ticket, validations...): GLPI then returns its first
+   * option only, or nothing, and the rows came back as `{}`. Every option
+   * when the catalogue is small, else the itemtype's own columns, up to
+   * CATALOGUE_COLUMNS_MAX. undefined when the catalogue cannot be read.
+   */
+  private async catalogueColumns(itemtype: string): Promise<number[] | undefined> {
+    if (!this.searchOptions) return undefined;
+    try {
+      // GLPI answers 400 to a forced column marked nodisplay.
+      const options = [...(await this.searchOptions.get(itemtype)).byId.values()].filter((o) => !o.nodisplay).sort((a, b) => a.id - b.id);
+      if (options.length <= CATALOGUE_COLUMNS_MAX) return options.map((o) => o.id);
+      return options
+        .filter((o) => o.uid === `${itemtype}.${o.field}`)
+        .slice(0, CATALOGUE_COLUMNS_MAX)
+        .map((o) => o.id);
+    } catch {
+      return undefined;
     }
   }
 
@@ -348,14 +411,27 @@ export class GlpiSearch {
 
   /**
    * forcedisplay for a row search: the caller's columns, or GLPI's default
-   * ones, with the id column first. Without the defaults (unreadable), the
-   * caller's list is sent unchanged and GLPI picks the columns as before.
+   * ones (the catalogue's when GLPI has none), with the id column first.
+   * Without the defaults (unreadable), the caller's list is sent unchanged
+   * and GLPI picks the columns as before. `guessed` marks columns taken from
+   * the catalogue: a search GLPI refuses with them is retried without.
    */
-  private async columns(itemtype: string, forcedisplay: readonly number[] = []): Promise<number[]> {
-    const base = forcedisplay.length ? [...forcedisplay] : await this.defaultColumns(itemtype);
-    if (!base) return [...forcedisplay];
+  private async columns(
+    itemtype: string,
+    forcedisplay: readonly number[] = []
+  ): Promise<{ ids: number[]; guessed: boolean; idOption?: number }> {
+    let base = forcedisplay.length ? [...forcedisplay] : await this.defaultColumns(itemtype);
+    if (!base) return { ids: [...forcedisplay], guessed: false, idOption: await this.idOption(itemtype) };
+    let guessed = false;
+    if (base.length === 0) {
+      const fromCatalogue = await this.catalogueColumns(itemtype);
+      if (fromCatalogue?.length) {
+        base = fromCatalogue;
+        guessed = true;
+      }
+    }
     const idOption = await this.idOption(itemtype);
-    return base.includes(idOption) ? base : [idOption, ...base];
+    return { ids: idOption === undefined || base.includes(idOption) ? base : [idOption, ...base], guessed, idOption };
   }
 
   /**
@@ -395,32 +471,48 @@ export class GlpiSearch {
     // by uid, and distinct options sharing a uid (Ticket requester 4 and
     // technician 5 are both "Ticket.Ticket_User.User.name") collapse into a
     // single key, losing data. Numeric keys are renamed via the catalogue.
-    const params = new URLSearchParams();
+    const columns = mapKeys
+      ? await this.columns(itemtype, options.forcedisplay)
+      : { ids: [...(options.forcedisplay ?? [])], guessed: false, idOption: 2 as number | undefined };
+    // An itemtype without an id option (ProjectTask, ChangeValidation on
+    // GLPI 10...) cannot return its ids as a column. `withindexes` keys the
+    // rows by id instead, but a JSON object loses GLPI's row order: it is
+    // asked for only when no sort is, where the order is the ids' own.
+    const indexed = mapKeys && columns.idOption === undefined && options.sort === undefined;
+    const query = (forcedisplay: readonly number[]) => {
+      const params = new URLSearchParams();
+      (options.criteria ?? []).forEach((c, i) => {
+        params.append(`criteria[${i}][field]`, String(c.field));
+        params.append(`criteria[${i}][searchtype]`, c.searchtype);
+        params.append(`criteria[${i}][value]`, String(c.value));
+        if (i > 0 && c.link) params.append(`criteria[${i}][link]`, c.link);
+      });
+      forcedisplay.forEach((id, i) => {
+        params.append(`forcedisplay[${i}]`, String(id));
+      });
+      params.append('range', `${start}-${end}`);
+      if (options.sort !== undefined) params.append('sort', String(options.sort));
+      if (options.order) params.append('order', options.order);
+      if (options.expandDropdowns) params.append('expand_dropdowns', 'true');
+      if (options.giveItems) params.append('giveItems', 'true');
+      if (options.isDeleted) params.append('is_deleted', '1');
+      if (indexed) params.append('withindexes', 'true');
+      return params;
+    };
+    type Page = { totalcount?: number; count?: number; data?: T[] | Record<string, T> };
+    const run = (forcedisplay: readonly number[]) => this.http.request<Page>(`search/${itemtype}`, { query: query(forcedisplay) });
 
-    (options.criteria ?? []).forEach((c, i) => {
-      params.append(`criteria[${i}][field]`, String(c.field));
-      params.append(`criteria[${i}][searchtype]`, c.searchtype);
-      params.append(`criteria[${i}][value]`, String(c.value));
-      if (i > 0 && c.link) params.append(`criteria[${i}][link]`, c.link);
-    });
-
-    const forcedisplay = mapKeys ? await this.columns(itemtype, options.forcedisplay) : [...(options.forcedisplay ?? [])];
-    forcedisplay.forEach((id, i) => {
-      params.append(`forcedisplay[${i}]`, String(id));
-    });
-
-    params.append('range', `${start}-${end}`);
-    if (options.sort !== undefined) params.append('sort', String(options.sort));
-    if (options.order) params.append('order', options.order);
-    if (options.expandDropdowns) params.append('expand_dropdowns', 'true');
-    if (options.giveItems) params.append('giveItems', 'true');
-    if (options.isDeleted) params.append('is_deleted', '1');
-
-    const { data, headers } = await this.http.request<{
-      totalcount?: number;
-      count?: number;
-      data?: T[];
-    }>(`search/${itemtype}`, { query: params });
+    let response: Awaited<ReturnType<typeof run>>;
+    try {
+      response = await run(columns.ids);
+    } catch (err) {
+      // Columns guessed from the catalogue must never cost a search that worked before.
+      // Only a refused request (400) can be about the columns.
+      if (!columns.guessed || !(err instanceof GlpiError) || err.status !== 400) throw err;
+      response = await run(columns.idOption === undefined ? [] : [columns.idOption]);
+    }
+    const { data, headers } = response;
+    const rows = indexed ? rowsById<T>(data.data, options.order) : Array.isArray(data.data) ? data.data : [];
 
     const contentRange = headers.get('content-range') ?? undefined;
     let totalcount = data.totalcount ?? 0;
@@ -433,9 +525,9 @@ export class GlpiSearch {
     return {
       itemtype,
       totalcount,
-      count: data.count ?? (data.data?.length ?? 0),
+      count: data.count ?? rows.length,
       start,
-      data: mapKeys ? await this.readableRows<T>(itemtype, data.data ?? []) : data.data ?? [],
+      data: mapKeys ? await this.readableRows<T>(itemtype, rows) : rows,
       contentRange,
     };
   }

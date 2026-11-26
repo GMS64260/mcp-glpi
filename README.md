@@ -187,8 +187,8 @@ deletes carry `destructiveHint: true`. Every tool rejects unknown arguments.
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
 | `glpi_search_tickets` | | `status`, `open_only`, `assigned_user_id`, `assigned_group_id`, `requester_user_id`, `observer_user_id`, `category_id`, `entity_id`, `priority`, `urgency`, `date_from`, `date_to`, `text_search`, paging | Find tickets; newest update first. The three `*_user_id` filters take a User id or `"me"` |
-| `glpi_get_ticket` | | `id`, `with_logs`, `verbose` | One ticket with labels, plain-text content and followup/task/solution `counts` |
-| `glpi_get_ticket_timeline` | | `id`, `itemtype`, `kinds` | Followups, tasks, solutions, validations, documents of a Ticket, Change or Problem, oldest first |
+| `glpi_get_ticket` | | `id`, `with_logs`, `verbose` | One ticket with labels, plain-text content, `actors`, `links` and followup/task/solution `counts` (see [Actors and links](#actors-and-links)) |
+| `glpi_get_ticket_timeline` | | `id`, `itemtype`, `kinds`, `start`, `limit`, `order` | Followups, tasks, solutions, validations, documents of a Ticket, Change or Problem, oldest first, 50 per page (`order: "DESC"`: newest first) |
 | `glpi_list_overdue_tickets` | | `entity_id`, `start`, `limit` | Open tickets past `time_to_resolve`, oldest deadline first |
 | `glpi_get_ticket_satisfaction` | | `ticket_id` | Satisfaction survey (score, comment, dates) |
 | `glpi_create_ticket` | W | `name`, `content`, `type`, `urgency`, `impact`, `priority`, `category_id`, `entity_id`, `requester_user_id`, `requester_group_id`, `user_id_assign`, `group_id_assign`, `time_to_resolve` | Create a ticket (defaults: type 1 Incident, urgency 3) |
@@ -198,10 +198,10 @@ deletes carry `destructiveHint: true`. Every tool rejects unknown arguments.
 | `glpi_add_followup` | W | `ticket_id`, `itemtype`, `content`, `is_private` | Comment on a Ticket, Change or Problem |
 | `glpi_add_task` | W | `ticket_id`, `itemtype`, `content`, `actiontime` (s), `state`, `is_private`, `users_id_tech`, `groups_id_tech`, `begin`, `end` | Work log / planned task |
 | `glpi_add_solution` | W | `ticket_id`, `itemtype`, `content`, `solutiontypes_id` | Add a solution; GLPI marks the item solved |
-| `glpi_assign_ticket` | W | `ticket_id`, `user_id`, `group_id`, `type` (actor role, default 2) | Add a user and/or group as requester, assignee or observer |
+| `glpi_assign_ticket` | W | `ticket_id`, `itemtype`, `user_id`, `group_id`, `type` (actor role, default 2), `mode` (`add`, `replace`, `remove`) | Add, replace or remove a user and/or group as requester, assignee or observer of a Ticket, Change or Problem |
 | `glpi_link_tickets` | W | `ticket_id`, `other_ticket_id`, `relation` | Link two tickets (see [Link relations](#link-relations)) |
 | `glpi_add_ticket_validation` | W | `ticket_id`, `users_id_validate`, `comment_submission` | Ask a user to approve a ticket |
-| `glpi_set_validation_status` | W | `validation_id`, `status` (2/3), `comment_validation` | Approve or refuse a validation |
+| `glpi_set_validation_status` | W | `validation_id`, `itemtype` (`Ticket` default, `Change`), `status` (`accepted` / `refused`), `comment_validation` | Accept or refuse a validation; a refusal needs a comment. The answer is read back: if GLPI kept the validation as it was (the account is not the approver), the call fails instead of reporting success |
 | `glpi_upload_document` | W | `content_base64` + `filename`, or `file_path`; `name`, `ticket_id` | Upload a Document (max 20 MB), optionally attached to a ticket |
 | `glpi_attach_document_to_ticket` | W | `ticket_id`, `document_id` | Link an existing Document to a ticket |
 | `glpi_merge_tickets` | W | `target_id`, `source_ids` (max 20), `copy`, `source_action`, `dry_run` | GLPI's merge (see below) |
@@ -236,25 +236,79 @@ the three options share one uid and column, so unlike the other filters they
 cannot be resolved through `listSearchOptions`. On a GLPI where they were
 renumbered, filter with `glpi_search_v2`.
 
-`itemtype` on the timeline and on followup/task/solution is `Ticket`
-(default), `Change` or `Problem`; `ticket_id` / `id` is then the id of that
-item. Problems have no validations.
+`itemtype` on the timeline, on followup/task/solution and on
+`glpi_assign_ticket` is `Ticket` (default), `Change` or `Problem`;
+`ticket_id` / `id` is then the id of that item. Problems have no validations.
+
+**The timeline is paged.** `glpi_get_ticket_timeline` reads every row of the
+kinds asked for, sorts them by date and returns 50 per page (`limit`, max
+500) with `totalcount` and `next_start`, like the list tools;
+`order: "DESC"` starts from the newest entry. Until 4.2.0 a long ticket lost
+its most recent followups (or tasks...) without a word: when no range is
+asked GLPI answers one page, the "results per page" setting of the account
+(15 by default, often 50).
+
+#### Actors and links
+
+`glpi_get_ticket`, `glpi_get_problem` and `glpi_get_change` return who works
+on the item and what it is linked to:
+
+```json
+{
+  "actors": {
+    "requester": [{"itemtype": "User", "id": 275, "name": "Jane Doe"}],
+    "assigned": [{"itemtype": "User", "id": 12, "name": "John Smith"}, {"itemtype": "Group", "id": 4, "name": "Support > N2"}],
+    "observer": []
+  },
+  "links": {
+    "tickets": [{"id": 1092, "relation": "duplicate", "name": "Wi-Fi down", "status": 5, "status_label": "Solved"}],
+    "problems": [{"id": 3, "name": "Mail outage", "status": 2, "status_label": "Processing (assigned)"}],
+    "changes": []
+  }
+}
+```
+
+- `actors`: users, groups and suppliers by role, read from GLPI's link
+  tables (`Ticket_User`, `Group_Ticket`, `Problem_User`, `Group_Problem`,
+  `Change_User`, `Change_Group`...). A requester known by e-mail only has
+  `id: 0` and `email`.
+- `links`: a ticket lists its problems, changes and linked tickets
+  (`relation`, as "this ticket `<relation>` the other"); a problem its
+  tickets and changes; a change its tickets and problems. Names and statuses
+  come from one search per 50 linked items (the first 200 of each kind); an
+  item GLPI does not return (trashed, outside the active entity) keeps its
+  `id` only.
+- A list GLPI refuses is named in `_errors` (`{"Problem_Supplier": "403
+  ERROR_RIGHT_MISSING ..."}`), so "nobody assigned" and "not allowed to see"
+  differ.
+
+`glpi_assign_ticket` writes the actors. `mode: "replace"` hands the item
+over: the user takes the place of the role's users, the group of its groups.
+Every add comes before the first removal, so the item is never left without
+assignee and a refused add removes nobody; a requester known by e-mail only
+is kept. `mode: "remove"` takes one actor off its role, and fails naming the
+current ones when the actor does not hold it. GLPI has no transaction over
+these calls: a failure after the first write is reported with what was
+already applied.
 
 ### `itil` (8)
 
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
 | `glpi_list_problems` | | paging, `sort`, `order`, `is_deleted`, `verbose` | Problems, newest first, with labels |
-| `glpi_get_problem` | | `id`, `verbose` | One problem with `counts` |
+| `glpi_get_problem` | | `id`, `verbose` | One problem with its analysis (`impactcontent`, `causecontent`, `symptomcontent`), `actors`, `links` and `counts` |
 | `glpi_create_problem` | W | `name`, `content`, `urgency`, `impact`, `priority`, `category_id`, `entity_id` | Create a problem |
 | `glpi_update_problem` | W | `id`, `name`, `content`, `status`, `urgency`, `impact`, `priority`, `itilcategories_id` | Change the given fields |
 | `glpi_list_changes` | | paging, `sort`, `order`, `is_deleted`, `verbose` | Changes, newest first, with labels |
-| `glpi_get_change` | | `id`, `verbose` | One change with `counts` (validations included) |
+| `glpi_get_change` | | `id`, `verbose` | One change with its plans (`rolloutplancontent`, `backoutplancontent`...), `actors`, `links` and `counts` (validations included) |
 | `glpi_create_change` | W | same as `glpi_create_problem` | Create a change |
 | `glpi_update_change` | W | same as `glpi_update_problem` | Change the given fields |
 
-To filter problems or changes, use `glpi_search_v2`. Their followups, tasks
-and solutions go through the ticket tools with `itemtype`.
+To filter problems or changes, use `glpi_search_v2`. Their followups, tasks,
+solutions and actors go through the ticket tools with `itemtype`
+(`glpi_add_task`, `glpi_assign_ticket`...); a task is rescheduled with
+`glpi_update_item {itemtype: "ProblemTask", id, input: {begin, end}}`.
+`actors` and `links` are described under [Actors and links](#actors-and-links).
 
 ### `core` (2) and `assets` (3): generic item tools
 
@@ -275,7 +329,7 @@ see [Correcting the timeline](#tickets-19)).
 | Tool | | Main parameters | What it does |
 |---|---|---|---|
 | `glpi_list_items` | core | `itemtype`, paging, `sort`, `order`, `search_text`, `is_deleted`, `expand_dropdowns`, `fields`, `verbose` | Compact rows of one itemtype; `search_text` = `{column: "substring"}`, `"^x$"` for exact |
-| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, the project sections below, and `visibility` on a `KnowbaseItem` |
+| `glpi_get_item` | core | `itemtype`, `id`, `with`, `verbose` | One item; `with` embeds `softwares`, `networkports`, `connections`, `disks`, `documents`, `infocoms`, `contracts`, `tickets`, `problems`, `changes`, `logs`, the project sections below, `project_tasks` on a `User` or `Group`, and `visibility` on a `KnowbaseItem` |
 | `glpi_get_item_logs` | | `itemtype`, `id`, paging | History (`Log`) of one item, one page at a time, with `totalcount`. Use it instead of `with: ["logs"]` on a long history: `with_logs` returns the whole history in one response, which can exceed PHP `memory_limit` and answer 500 |
 | `glpi_create_item` | W | `itemtype`, `input` | Create from GLPI column values, e.g. `{"name":"PC-42","locations_id":3}`. Without `entities_id` the item lands in the active entity, and the result names it (`entities_id`) |
 | `glpi_update_item` | W | `itemtype`, `id`, `input` | Change the given columns; `Computer`, `Project` and `ProjectTask` accept only their usual fields, `Ticket` / `Problem` / `Change` exactly those of `glpi_update_ticket` / `glpi_update_problem` / `glpi_update_change`; links cannot be updated (delete, then create) |
@@ -287,14 +341,16 @@ see [Correcting the timeline](#tickets-19)).
 `ProjectState` name) and `state_is_finished`, so open projects can be told
 from finished ones (`glpi_list_items {itemtype: "ProjectState"}` lists the
 states). On a `Project`, `glpi_get_item` always adds `counts` (`tasks`,
-`team`, `itil`, plus `open_tasks` when the tasks are read) and `with` takes:
+`team`, `itil` = tickets, changes and problems together, plus `open_tasks`
+when the tasks are read and `tickets` / `changes` / `problems` when one of
+these sections is) and `with` takes:
 
 | `with` | Key | Content |
 |---|---|---|
 | `tasks` | `_tasks` | Tasks: state, parent task (`projecttasks_id`), percent done, planned and real dates, durations (seconds), milestone, plain-text content |
 | `task_details` | `_tasks` | The tasks, each with its `team` and `tickets` (first 50 tasks, two GLPI calls per task) |
 | `team` | `_team` | Team members: `itemtype` (`User`, `Group`, `Supplier`, `Contact`), `items_id`, name |
-| `tickets`, `changes`, `problems` | `_tickets`... | Linked ITIL items (`Itil_Project`) with name, `status`, `status_label` |
+| `tickets`, `changes`, `problems` | `_tickets`... | Linked ITIL items (`Itil_Project`) with name, `status`, `status_label`; `name: null` and `unreadable` (GLPI's answer) for an item that cannot be read |
 | `costs` | `_costs` | Costs |
 | `items` | `_items` | Linked assets (`Item_Project`) with name |
 | `subprojects` | `_subprojects` | Child projects with their state |
@@ -303,6 +359,13 @@ states). On a `Project`, `glpi_get_item` always adds `counts` (`tasks`,
 On a `ProjectTask`, `with` takes `team` and `tickets`. A section GLPI
 refuses (`403 ERROR_RIGHT_MISSING`, e.g. a profile that only sees its own
 tasks) is reported in `_errors` instead of coming back as an empty list.
+
+**Whose task is it?** The people in charge of a project task are its team,
+not its creator, and GLPI 10 has no search option for the team (GLPI 11 has:
+87 users, 88 groups). `glpi_get_item {itemtype: "User", id, with:
+["project_tasks"]}` (or `"Group"`) returns the tasks whose team holds that
+user or group, as `_project_tasks`: id, name, project, state, percent done
+and dates (first 100; `_project_tasks_total` beyond).
 
 Writes: `glpi_create_item {itemtype: "ProjectTask", input: {projects_id, name,
 ...}}` (GLPI puts the task in its project's entity); team members with
@@ -363,7 +426,22 @@ many were solved late and the late rate (%).
 
 Search rows always carry the item `id`: GLPI returns it only when it is a
 displayed column, so the server asks for GLPI's default columns (your
-display preferences, else the global ones) plus the id.
+display preferences, else the global ones) plus the id. Two cases GLPI
+leaves bare are filled in:
+
+- an itemtype without display preferences (link tables such as
+  `Problem_Ticket`, `Change_Ticket`, `Itil_Project`, validations...) gets the
+  columns of its search-option catalogue (all the displayable ones up to 15,
+  else its own columns), so `glpi_search_v2 {"itemtype": "Problem_Ticket"}`
+  returns `{"id", "problem_id", "ticket_id"}` rows instead of `{}`. This
+  needs a profile that can read the display preferences; otherwise GLPI
+  picks the columns, as before;
+- an itemtype without an id option (`ProjectTask`, `ChangeValidation` on
+  GLPI 10) gets its ids from GLPI's `withindexes`, unless the search is
+  sorted on a column: rows keyed by id cannot carry GLPI's sort order.
+  Inside a page these rows come in id order.
+
+`TicketValidation` / `ChangeValidation` rows carry `status_label`.
 
 User columns reached through a link (ticket requester, technician,
 observer...) come from GLPI 11 as user ids (`"605"`, or a list when there
@@ -539,7 +617,7 @@ GLPI computes the priority from urgency and impact when it is not given.
 | Ticket `type` | 1 Incident, 2 Request |
 | Actor role (`glpi_assign_ticket` `type`) | 1 Requester, 2 Assigned, 3 Observer |
 | Task `state` | 0 Information, 1 To do, 2 Done |
-| Validation status | 1 Waiting, 2 Granted, 3 Refused |
+| Validation status (`status`, `global_validation`) | 1 None, 2 Waiting, 3 Accepted, 4 Refused; `glpi_set_validation_status` takes `accepted` / `refused` |
 | Timeline `kinds` | `followup`, `task`, `solution`, `validation`, `document` |
 
 ### Link relations
@@ -681,9 +759,9 @@ npm start            # node dist/index.js (stdio); npm start -- --http for HTTP
 ```
 
 `npm run measure` builds the catalogue in-process and prints its size, the
-largest tools and where the characters go. Today: 48 tools, 26,760
-characters (about 7.4k tokens); 24 tools and 13,294 characters with
-`GLPI_READ_ONLY=1`; instructions 2,465 characters. `test/server.test.ts` pins
+largest tools and where the characters go. Today: 48 tools, 27,303
+characters (about 7.6k tokens); 24 tools and 13,399 characters with
+`GLPI_READ_ONLY=1`; instructions 2,474 characters. `test/server.test.ts` pins
 the ceilings.
 
 CI (`.github/workflows/ci.yml`) builds, lints and tests on Node 20 and 22,
