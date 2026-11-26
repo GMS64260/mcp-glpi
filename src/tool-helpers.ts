@@ -10,6 +10,7 @@ import type { GlpiClient, TicketRelation } from './glpi-client.js';
 import type { SearchCriterion, SearchLink, SearchType } from './search.js';
 import type { SearchOptionsCatalogue } from './search-options.js';
 import { ArgumentError } from './errors.js';
+import { VALIDATION_ACCEPTED, VALIDATION_REFUSED, type ValidationAnswer } from './itil.js';
 
 const invalid = (message: string) => new ArgumentError(message);
 
@@ -32,11 +33,35 @@ export function requireId(args: Record<string, unknown>, key: string, min = 1): 
   return n;
 }
 
-/** `status` for glpi_set_validation_status: 2 or 3, numeric strings accepted. */
-export function parseValidationStatus(value: unknown): 2 | 3 {
-  const n = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
-  if (n !== 2 && n !== 3) throw invalid(`status must be 2 (granted) or 3 (refused), got ${JSON.stringify(value)}`);
-  return n;
+const VALIDATION_ANSWERS: Record<string, ValidationAnswer> = {
+  accepted: VALIDATION_ACCEPTED,
+  accept: VALIDATION_ACCEPTED,
+  approved: VALIDATION_ACCEPTED,
+  approve: VALIDATION_ACCEPTED,
+  granted: VALIDATION_ACCEPTED,
+  refused: VALIDATION_REFUSED,
+  refuse: VALIDATION_REFUSED,
+  rejected: VALIDATION_REFUSED,
+  reject: VALIDATION_REFUSED,
+  denied: VALIDATION_REFUSED,
+};
+
+/**
+ * `status` for glpi_set_validation_status: "accepted" or "refused", as
+ * GLPI's code (3 or 4). Numbers are refused on purpose: until 4.2.0 the tool
+ * documented 2 = granted and 3 = refused while GLPI reads 2 as Waiting and 3
+ * as Accepted, so a number cannot be told apart from the old convention, and
+ * an approval must not be guessed.
+ */
+export function parseValidationStatus(value: unknown): ValidationAnswer {
+  const answer = typeof value === 'string' ? VALIDATION_ANSWERS[value.trim().toLowerCase()] : undefined;
+  if (answer === undefined) {
+    throw invalid(
+      `status must be "accepted" or "refused", got ${JSON.stringify(value)}. ` +
+        'Numeric codes are not accepted: mcp-glpi <= 4.2.0 documented 2/3, which GLPI reads as Waiting/Accepted.'
+    );
+  }
+  return answer;
 }
 
 // ---------------------------------------------------------------------------

@@ -7,8 +7,8 @@ import { z } from 'zod';
 import { type GlpiClient, formatGlpiDate } from '../glpi-client.js';
 import type { SearchCriterion } from '../search.js';
 import { ArgumentError } from '../errors.js';
-import { type ItilItemtype, VALIDATION_STATUS } from '../itil.js';
-import { cleanTextFields, compactItem, pageLimit, stripLinks, text } from '../output.js';
+import { type ItilItemtype, VALIDATION_REFUSED, VALIDATION_STATUS } from '../itil.js';
+import { cleanTextFields, compactItem, listEnvelope, pageLimit, stripLinks, text } from '../output.js';
 import {
   OPEN_STATUS_VALUE,
   parseValidationStatus,
@@ -16,7 +16,8 @@ import {
   resolveUploadSource,
   ticketField,
 } from '../tool-helpers.js';
-import { defineTool, type ToolDef } from './registry.js';
+import { advertisedAs, defineTool, type ToolDef } from './registry.js';
+import { ACTOR_MODES, changeActors, readItilRelations } from './itil-relations.js';
 import {
   DATE,
   IMPACT_DESC,
@@ -196,7 +197,7 @@ const getTicket = defineTool({
   title: 'Get ticket',
   toolset: 'tickets',
   description:
-    'One ticket with labels, plain-text content and followup/task/solution counts. Conversation: glpi_get_ticket_timeline.',
+    'One ticket: labels, plain-text content, actors, links, counts. Conversation: glpi_get_ticket_timeline.',
   inputSchema: {
     id: id(),
     with_logs: optBool('Add the history log (long)'),
@@ -204,20 +205,24 @@ const getTicket = defineTool({
     ...textShape,
   },
   handler: async ({ client }, a) => {
-    const [ticket, counts] = await Promise.all([
+    const [ticket, counts, relations] = await Promise.all([
       client.getTicket(a.id, { with_logs: a.with_logs }),
       client.countItilChildren('Ticket', a.id),
+      readItilRelations(client, 'Ticket', a.id),
     ]);
-    return text({ ...compactItem('Ticket', ticket, a), counts });
+    return text({ ...compactItem('Ticket', ticket, a), ...relations, counts });
   },
 });
+
+/** Entries of glpi_get_ticket_timeline per page, when `limit` is not given. */
+export const TIMELINE_DEFAULT_LIMIT = 50;
 
 const getTimeline = defineTool({
   name: 'glpi_get_ticket_timeline',
   title: 'Get ITIL timeline',
   toolset: 'tickets',
   description:
-    'Followups, tasks, solutions, validations and documents of a ticket, change or problem, oldest first.',
+    'Followups, tasks, solutions, validations and documents of a ticket, change or problem, oldest first, 50 per page.',
   inputSchema: {
     id: id(ITIL_PARENT_DESC),
     itemtype: itilItemtype,
@@ -226,6 +231,8 @@ const getTimeline = defineTool({
       .min(1)
       .optional()
       .describe('Default all; no validation on Problem'),
+    ...pageShape,
+    order: orderSchema,
     verbose,
     ...textShape,
   },
@@ -233,21 +240,28 @@ const getTimeline = defineTool({
     const itemtype: ItilItemtype = a.itemtype ?? 'Ticket';
     const kinds = new Set<TimelineKind>(a.kinds ?? TIMELINE_KINDS);
     const none = async () => [] as unknown[];
-    const [followups, tasks, solutions, validations, documents] = await Promise.all([
+    // Every row of every kind is read (getSubItems follows the pages), then
+    // sorted and cut here: GLPI cannot page across five tables.
+    const lists = await Promise.all([
       kinds.has('followup') ? client.getItilFollowups(itemtype, a.id) : none(),
       kinds.has('task') ? client.getItilTasks(itemtype, a.id) : none(),
       kinds.has('solution') ? client.getItilSolutions(itemtype, a.id) : none(),
       kinds.has('validation') ? client.getItilValidations(itemtype, a.id) : none(),
       kinds.has('document') ? client.getItilDocuments(itemtype, a.id) : none(),
     ]);
-    const timeline = [
-      ...followups.map((r) => timelineEntry('followup', r, a)),
-      ...tasks.map((r) => timelineEntry('task', r, a)),
-      ...solutions.map((r) => timelineEntry('solution', r, a)),
-      ...validations.map((r) => timelineEntry('validation', r, a)),
-      ...documents.map((r) => timelineEntry('document', r, a)),
-    ].sort((x, y) => String(x.date).localeCompare(String(y.date)));
-    return text({ itemtype, id: a.id, count: timeline.length, timeline });
+    const all = lists.flatMap((rows, i) =>
+      rows.map((raw) => ({ kind: TIMELINE_KINDS[i], raw, date: timelineDate(TIMELINE_KINDS[i], (raw ?? {}) as Record<string, unknown>) }))
+    );
+    all.sort((x, y) => x.date.localeCompare(y.date));
+    if (a.order === 'DESC') all.reverse();
+    const start = a.start ?? 0;
+    const page = all.slice(start, start + pageLimit(a.limit, TIMELINE_DEFAULT_LIMIT));
+    const { items, ...envelope } = listEnvelope(
+      page.map((e) => timelineEntry(e.kind, e.raw, a)),
+      start,
+      all.length
+    );
+    return text({ itemtype, id: a.id, ...envelope, timeline: items });
   },
 });
 
@@ -488,23 +502,40 @@ const addSolution = defineTool({
 
 const assignTicket = defineTool({
   name: 'glpi_assign_ticket',
-  title: 'Assign ticket',
+  title: 'Assign actors',
   toolset: 'tickets',
-  description: 'Add a user and/or a group to a ticket as requester, assignee (default) or observer.',
+  description:
+    'Add, replace or remove a user and/or group as requester, assignee (default) or observer of a ticket, change or problem.',
   inputSchema: {
-    ticket_id: id(),
+    ticket_id: id(ITIL_PARENT_DESC),
+    itemtype: itilItemtype,
     user_id: optId(),
     group_id: optId(),
     type: optInt('Actor role (default 2 Assigned)'),
+    mode: z.enum(ACTOR_MODES).optional().describe('Default add; replace: instead of the current ones'),
   },
   handler: async ({ client }, a) => {
     if (!a.user_id && !a.group_id) throw invalid('user_id or group_id required');
-    const result = await client.assignTicket(a.ticket_id, { users_id: a.user_id, groups_id: a.group_id, type: a.type });
+    const itemtype: ItilItemtype = a.itemtype ?? 'Ticket';
+    const { added, removed } = await changeActors(client, itemtype, a.ticket_id, {
+      userId: a.user_id,
+      groupId: a.group_id,
+      type: a.type,
+      mode: a.mode,
+    });
+    const linkId = (kind: 'User' | 'Group') => added.find((l) => /_User$/.test(l.link) === (kind === 'User'))?.id;
+    const userLink = linkId('User');
+    const groupLink = linkId('Group');
     return text({
       success: true,
-      assignment_id: result.id,
-      ...(result.user_link_id !== undefined ? { user_assignment_id: result.user_link_id } : {}),
-      ...(result.group_link_id !== undefined ? { group_assignment_id: result.group_link_id } : {}),
+      itemtype,
+      id: a.ticket_id,
+      added: added.length,
+      removed: removed.length,
+      // v3/v4 names of the links created.
+      ...(added.length ? { assignment_id: added[0].id } : {}),
+      ...(userLink !== undefined ? { user_assignment_id: userLink } : {}),
+      ...(groupLink !== undefined ? { group_assignment_id: groupLink } : {}),
     });
   },
 });
@@ -551,18 +582,46 @@ const addValidation = defineTool({
 
 const setValidationStatus = defineTool({
   name: 'glpi_set_validation_status',
-  title: 'Answer ticket validation',
+  title: 'Answer validation',
   toolset: 'tickets',
-  description: 'Approve or refuse a ticket validation (id from the timeline).',
+  description: 'Accept or refuse a ticket or change validation (id from its timeline); a refusal needs a comment.',
   inputSchema: {
     validation_id: id(),
-    status: z.union([z.number(), z.string()]).describe('2 Granted, 3 Refused'),
+    itemtype: z.enum(['Ticket', 'Change']).optional().describe('Default Ticket'),
+    // Anything is taken so that a number gets an explanation, not a bare schema error.
+    status: advertisedAs(z.union([z.string(), z.number()]), { type: 'string', enum: ['accepted', 'refused'], description: 'Answer' }),
     comment_validation: optStr('Answer comment'),
   },
   handler: async ({ client }, a) => {
     const status = parseValidationStatus(a.status);
-    await client.setTicketValidationStatus(a.validation_id, status, a.comment_validation);
-    return text({ success: true, validation_id: a.validation_id, status_label: VALIDATION_STATUS[status] });
+    if (status === VALIDATION_REFUSED && !a.comment_validation?.trim()) {
+      throw invalid('comment_validation is required to refuse a validation (GLPI rejects a refusal without a reason)');
+    }
+    // TicketValidation and ChangeValidation ids are separate: the wrong itemtype answers another record.
+    const itemtype = a.itemtype ?? 'Ticket';
+    await client.setTicketValidationStatus(a.validation_id, status, a.comment_validation, itemtype);
+    // GLPI drops the answer of an account that is not the approver and still says OK: read it back.
+    let recorded: number | undefined;
+    try {
+      const row = await client.getItem<Record<string, unknown>>(`${itemtype}Validation`, a.validation_id, { expand_dropdowns: false });
+      recorded = Number.isInteger(Number(row.status)) && Number(row.status) > 0 ? Number(row.status) : undefined;
+    } catch {
+      // unreadable: the answer below says it was not checked
+    }
+    if (recorded !== undefined && recorded !== status) {
+      throw new Error(
+        `GLPI did not record the answer: ${itemtype}Validation ${a.validation_id} is still "${VALIDATION_STATUS[recorded] ?? recorded}". ` +
+          'Only the requested approver (or an account allowed to answer for them) can answer a validation.'
+      );
+    }
+    return text({
+      success: true,
+      itemtype,
+      validation_id: a.validation_id,
+      status,
+      status_label: VALIDATION_STATUS[status],
+      verified: recorded === status,
+    });
   },
 });
 

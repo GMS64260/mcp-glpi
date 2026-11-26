@@ -96,7 +96,8 @@ const refKey = (r: LinkedRef) => `${r.itemtype}#${r.items_id}`;
 
 /**
  * Name (and ITIL status) of linked items, one GET per distinct item, at most
- * LINK_NAMES_MAX per call; a failed lookup leaves the name null.
+ * LINK_NAMES_MAX per call; a failed lookup leaves the name null and says why
+ * under `unreadable` ("404 ERROR_ITEM_NOT_FOUND ...").
  */
 async function describeLinks(client: GlpiClient, refs: readonly LinkedRef[]): Promise<Map<string, Row>> {
   const unique = [...new Map(refs.map((r) => [refKey(r), r])).values()].slice(0, LINK_NAMES_MAX);
@@ -111,8 +112,9 @@ async function describeLinks(client: GlpiClient, refs: readonly LinkedRef[]): Pr
           info.status_label = STATUS_BY_ITEMTYPE[ref.itemtype][Number(obj.status)] ?? null;
         }
         out.set(refKey(ref), info);
-      } catch {
-        out.set(refKey(ref), { name: null });
+      } catch (err) {
+        // Trashed, in another entity, or refused: say why the name is missing.
+        out.set(refKey(ref), { name: null, unreadable: sectionError(err) });
       }
     })
   );
@@ -132,6 +134,63 @@ const ticketLink = (row: Row): LinkedRef => ({ itemtype: 'Ticket', items_id: Num
 /** Raw rows of a sub-resource, ids not names (link targets and parents stay ids). */
 export const rawRows = async (client: GlpiClient, path: string) =>
   (await client.getSubItems(path, { expand_dropdowns: false })) as Row[];
+
+// ---------------------------------------------------------------------------
+// Project tasks of a user or a group
+// ---------------------------------------------------------------------------
+
+/** `with` value of glpi_get_item on a User or a Group. */
+export const MEMBER_TASKS_WITH = 'project_tasks';
+/** Tasks read for one team member (one GET each); the rest are counted. */
+export const MEMBER_TASKS_MAX = 100;
+
+const MEMBER_TASK_FIELDS = [
+  'id', 'name', 'projects_id', 'project', 'projecttasks_id', 'state', 'state_is_finished', 'percent_done',
+  'is_milestone', 'plan_start_date', 'plan_end_date', 'real_start_date', 'real_end_date',
+];
+
+/**
+ * Project tasks whose team holds the user or the group (issue #21, point 9).
+ * The people in charge of a task are its team (ProjectTaskTeam), which
+ * GLPI 10 cannot search from ProjectTask: its only user option is the
+ * creator, and filtering on it attributes every task to whoever typed it in.
+ * The team links are read by member, then each task; `_project_tasks_total`
+ * says how many there are when more than MEMBER_TASKS_MAX.
+ */
+export async function readMemberTasks(client: GlpiClient, itemtype: 'User' | 'Group', id: number, text: TextOptions = {}): Promise<Row> {
+  try {
+    const links = (await client.getSubItems('ProjectTaskTeam', {
+      expand_dropdowns: false,
+      searchText: { itemtype: `^${itemtype}$`, items_id: `^${id}$` },
+    })) as Row[];
+    const ids = [...new Set(links.map((l) => Number(l.projecttasks_id)).filter((n) => Number.isInteger(n) && n > 0))];
+    const states = (await projectStatesFor(client, 'ProjectTask')) ?? [];
+    const tasks = await Promise.all(
+      ids.slice(0, MEMBER_TASKS_MAX).map(async (taskId): Promise<Row> => {
+        try {
+          return withProjectState(await client.getItem<Row>('ProjectTask', taskId, { expand_dropdowns: false }), states);
+        } catch (err) {
+          return { id: taskId, name: null, unreadable: sectionError(err) };
+        }
+      })
+    );
+    const projects = await describeLinks(
+      client,
+      tasks.filter((t) => Number(t.projects_id) > 0).map((t) => ({ itemtype: 'Project', items_id: Number(t.projects_id) }))
+    );
+    const out: Row = {
+      _project_tasks: tasks.map((t) =>
+        t.unreadable
+          ? t
+          : compactItem('ProjectTask', { ...t, project: projects.get(`Project#${t.projects_id}`)?.name ?? null }, { ...text, fields: MEMBER_TASK_FIELDS })
+      ),
+    };
+    if (ids.length > MEMBER_TASKS_MAX) out._project_tasks_total = ids.length;
+    return out;
+  } catch (err) {
+    return { _errors: { project_tasks: sectionError(err) } };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -203,6 +262,8 @@ export async function readProjectSections(
 ): Promise<Row> {
   const run: SectionRun = { out: {}, errors: {}, jobs: [] };
   const take = (flag: string) => flags.delete(flag);
+  /** The project's ITIL links, when a tickets / changes / problems section read them. */
+  let itilRead: (() => Promise<Row[]>) | undefined;
 
   if (itemtype === 'ProjectTask') {
     if (take('team')) section(run, '_team', async () => linkRows(client, await rawRows(client, `ProjectTask/${id}/ProjectTaskTeam`), polymorphic));
@@ -213,7 +274,9 @@ export async function readProjectSections(
     if (take('team')) section(run, '_team', async () => linkRows(client, await rawRows(client, `Project/${id}/ProjectTeam`), polymorphic));
     const itil = itilLinks(client, id);
     for (const [flag, type] of Object.entries(ITIL_WITH)) {
-      if (take(flag)) section(run, `_${flag}`, async () => (await itil()).filter((l) => l.itemtype === type));
+      if (!take(flag)) continue;
+      itilRead = itil;
+      section(run, `_${flag}`, async () => (await itil()).filter((l) => l.itemtype === type));
     }
     if (take('items')) section(run, '_items', async () => linkRows(client, await rawRows(client, `Project/${id}/Item_Project`), polymorphic));
     if (take('costs')) {
@@ -234,19 +297,24 @@ export async function readProjectSections(
   await Promise.all(run.jobs);
 
   const out: Row = { ...run.out };
-  if (itemtype === 'Project') out.counts = await projectCounts(client, id, out);
+  if (itemtype === 'Project') out.counts = await projectCounts(client, id, out, await itilRead?.().catch(() => undefined));
   if (Object.keys(run.errors).length) out._errors = run.errors;
   return out;
 }
 
-/** tasks / team / itil counts, from the sections read or by count; open_tasks with the tasks. */
-async function projectCounts(client: GlpiClient, id: number, sections: Row): Promise<Row> {
+/**
+ * tasks / team / itil counts, from the sections read or by count; open_tasks
+ * with the tasks. `itil` counts tickets, changes and problems together: when
+ * the links were read, `tickets` / `changes` / `problems` split it, so a
+ * count can be compared with the `_tickets` list next to it.
+ */
+async function projectCounts(client: GlpiClient, id: number, sections: Row, itil?: readonly Row[]): Promise<Row> {
   const counts: Row = {};
   const tasks = sections._tasks as Row[] | undefined;
   const subs = { tasks: 'ProjectTask', team: 'ProjectTeam', itil: 'Itil_Project' } as const;
   await Promise.all(
     (Object.keys(subs) as (keyof typeof subs)[]).map(async (key) => {
-      const loaded = key === 'tasks' ? tasks : key === 'team' ? (sections._team as Row[] | undefined) : undefined;
+      const loaded = key === 'tasks' ? tasks : key === 'team' ? (sections._team as Row[] | undefined) : itil;
       if (loaded) {
         counts[key] = loaded.length;
         return;
@@ -259,5 +327,6 @@ async function projectCounts(client: GlpiClient, id: number, sections: Row): Pro
     })
   );
   if (tasks) counts.open_tasks = tasks.filter((t) => t.state_is_finished !== true).length;
+  if (itil) for (const [flag, type] of Object.entries(ITIL_WITH)) counts[flag] = itil.filter((l) => l.itemtype === type).length;
   return counts;
 }

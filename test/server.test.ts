@@ -159,9 +159,13 @@ test('catalogue size stays under its ceiling', async () => {
   // tools/list goes with every request of a session: 44,291 chars in the
   // first v4 cut, 41,921 in v3. Raise these only with a reason.
   // 4.2.0: 26,000 -> 26,500 for glpi_merge_tickets (GLPI's merge, ~560 chars).
-  // 27,000 and 13,500 (read-only) for glpi_get_item_logs (paged history, ~470 chars).
+  // 4.3.0: 26,500 -> 27,500, and 13,000 -> 13,500 read-only, for two things:
+  // glpi_get_item_logs (paged item history, PR #20, ~470 chars, read-only too)
+  // and issue #21 (~540 chars): the timeline is paged (start, limit, order),
+  // glpi_assign_ticket replaces or removes actors, on changes and problems too
+  // (itemtype, mode), and a change validation can be answered (itemtype).
   const full = JSON.stringify({ tools: await listNames() }).length;
-  assert.ok(full <= 27_000, `full catalogue: ${full} chars`);
+  assert.ok(full <= 27_500, `full catalogue: ${full} chars`);
   const readOnly = JSON.stringify({ tools: await listNames(parseRegistryOptions({ GLPI_READ_ONLY: '1' })) }).length;
   assert.ok(readOnly <= 13_500, `GLPI_READ_ONLY=1 catalogue: ${readOnly} chars`);
   assert.ok(INSTRUCTIONS.length <= 2_500, `instructions: ${INSTRUCTIONS.length} chars`);
@@ -642,7 +646,10 @@ test('glpi_get_ticket_timeline fetches only the requested kinds, sorted, as plai
   assert.deepEqual(body, {
     itemtype: 'Change',
     id: 7,
+    totalcount: 2,
+    start: 0,
     count: 2,
+    next_start: null,
     timeline: [
       { kind: 'task', date: '2026-01-01 09:00:00', id: 9, users_id: 'alice', state: 2, actiontime: 600, content: 'first' },
       { kind: 'followup', date: '2026-01-02 10:00:00', id: 2, users_id: 'bob', content: 'second' },

@@ -14,8 +14,8 @@
  *   - Bug fixes from v2 audit: is_active filter, group assignment, stats.
  */
 
-import type { ItilItemtype } from './itil.js';
-import { GlpiHttp, GlpiHttpConfig } from './http.js';
+import type { ItilItemtype, ValidationAnswer } from './itil.js';
+import { GlpiError, GlpiHttp, GlpiHttpConfig } from './http.js';
 import { GlpiSearch, SearchCriterion } from './search.js';
 import { SearchOptionsCache } from './search-options.js';
 
@@ -391,6 +391,11 @@ export const TICKET_LINK_TYPES: Record<TicketRelation, number> = {
   parent_of: 4,
 };
 
+/** Rows per request when a sub-resource is read whole (getSubItems). */
+export const SUB_ITEMS_PAGE = 200;
+/** Rows getSubItems reads before giving up. */
+export const SUB_ITEMS_MAX = 20_000;
+
 /** Total from a `Content-Range: start-end/total` header, if present. */
 export function parseContentRangeTotal(value: string | null | undefined): number | undefined {
   if (!value) return undefined;
@@ -748,14 +753,45 @@ export class GlpiClient {
   // unrelated records, so callers must always name the itemtype.
 
   /**
-   * Rows of a sub-resource (`Ticket/12/ITILFollowup`), dropdowns expanded
-   * (author/technician names instead of ids), without HATEOAS links.
+   * Every row of a sub-resource (`Ticket/12/ITILFollowup`) or of a filtered
+   * list, dropdowns expanded (author/technician names instead of ids),
+   * without HATEOAS links.
+   *
+   * Without a range GLPI answers one page, the "results per page" setting of
+   * the account (15 by default, often 50), without saying more exist: until
+   * 4.2.0 a long timeline, a project with many tasks or a merge lost the
+   * rest silently. Pages of SUB_ITEMS_PAGE are read until the total of
+   * `Content-Range` is reached; more than SUB_ITEMS_MAX rows is an error
+   * rather than a partial answer.
    */
-  async getSubItems(path: string, options: { expand_dropdowns?: boolean } = {}): Promise<unknown[]> {
-    const query: Record<string, string> = { get_hateoas: 'false' };
-    if (options.expand_dropdowns !== false) query.expand_dropdowns = 'true';
-    const { data } = await this.http.request<unknown[]>(path, { query });
-    return Array.isArray(data) ? data : [];
+  async getSubItems(
+    path: string,
+    options: { expand_dropdowns?: boolean; searchText?: Record<string, string> } = {}
+  ): Promise<unknown[]> {
+    const rows: unknown[] = [];
+    for (let start = 0; ; start += SUB_ITEMS_PAGE) {
+      const query = new URLSearchParams({ get_hateoas: 'false', range: `${start}-${start + SUB_ITEMS_PAGE - 1}` });
+      if (options.expand_dropdowns !== false) query.set('expand_dropdowns', 'true');
+      for (const [k, v] of Object.entries(options.searchText ?? {})) query.append(`searchText[${k}]`, v);
+      let page: unknown[];
+      let total: number | undefined;
+      try {
+        const { data, headers } = await this.http.request<unknown[]>(path, { query });
+        page = Array.isArray(data) ? data : [];
+        total = parseContentRangeTotal(headers.get('content-range'));
+      } catch (err) {
+        // A page asked past the end (no total in the previous answer): done.
+        if (start > 0 && err instanceof GlpiError && err.glpiCode === 'ERROR_RANGE_EXCEED_TOTAL') break;
+        throw err;
+      }
+      rows.push(...page);
+      if (page.length === 0) break;
+      if (total !== undefined ? rows.length >= total : page.length < SUB_ITEMS_PAGE) break;
+      if (rows.length > SUB_ITEMS_MAX) {
+        throw new Error(`${path}: more than ${SUB_ITEMS_MAX} rows; read it page by page with glpi_search_v2`);
+      }
+    }
+    return rows;
   }
 
   async getItilFollowups(itemtype: ItilItemtype, id: number) {
@@ -1247,8 +1283,8 @@ export class GlpiClient {
             tickets_id: ticketId,
             users_id_validate: options.users_id_validate,
             comment_submission: options.comment_submission ?? '',
+            // GLPI sets the status itself (WAITING) and stamps submission_date.
             submission_date: options.submission_date ?? formatGlpiDate(new Date()),
-            status: 1, // 1=Waiting
           },
         },
       }
@@ -1256,13 +1292,20 @@ export class GlpiClient {
     return Array.isArray(data) ? data[0] : data;
   }
 
-  /** Approve or refuse a validation. status: 2=granted, 3=refused */
+  /**
+   * Answer a validation of a ticket (default) or of a change, whose ids are
+   * separate. status: 3 = accepted, 4 = refused (GLPI wants a comment with a
+   * refusal); anything else is refused here, 2 and 3 having meant "granted"
+   * and "refused" until 4.2.0.
+   */
   async setTicketValidationStatus(
     validationId: number,
-    status: 2 | 3,
-    comment_validation?: string
+    status: ValidationAnswer,
+    comment_validation?: string,
+    itemtype: 'Ticket' | 'Change' = 'Ticket'
   ): Promise<boolean> {
-    await this.http.request(`TicketValidation/${validationId}`, {
+    if (status !== 3 && status !== 4) throw new Error('validation status must be 3 (accepted) or 4 (refused)');
+    await this.http.request(`${itemtype}Validation/${validationId}`, {
       method: 'PUT',
       json: {
         input: {

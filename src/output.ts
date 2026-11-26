@@ -12,7 +12,7 @@
  */
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { isItilItemtype, STATUS_BY_ITEMTYPE, TICKET_PRIORITY, TICKET_URGENCY } from './itil.js';
+import { isItilItemtype, STATUS_BY_ITEMTYPE, TICKET_PRIORITY, TICKET_URGENCY, VALIDATION_STATUS } from './itil.js';
 
 export const DEFAULT_LIST_LIMIT = 25;
 export const MAX_LIST_LIMIT = 500;
@@ -105,7 +105,11 @@ export interface TextOptions {
 }
 
 /** Text fields converted by `cleanText` / `cleanTextFields`. */
-export const TEXT_FIELDS = ['content', 'answer', 'comment', 'comment_submission', 'comment_validation'] as const;
+export const TEXT_FIELDS = [
+  'content', 'answer', 'comment', 'comment_submission', 'comment_validation',
+  // Analysis of a problem, plans of a change.
+  'impactcontent', 'causecontent', 'symptomcontent', 'controlistcontent', 'rolloutplancontent', 'backoutplancontent', 'checklistcontent',
+] as const;
 
 export function cleanText(value: unknown, opts: TextOptions = {}): unknown {
   if (typeof value !== 'string' || opts.raw_html) return value;
@@ -178,7 +182,7 @@ const asNumber = (v: unknown): number | undefined => {
   return undefined;
 };
 
-/** Add status_label / urgency_label / priority_label to an ITIL object (copy). */
+/** Add status_label / urgency_label / priority_label / global_validation_label to an ITIL object (copy). */
 export function withItilLabels<T extends Record<string, unknown>>(itemtype: string, obj: T): T {
   if (!isItilItemtype(itemtype)) return obj;
   const out: Record<string, unknown> = { ...obj };
@@ -188,6 +192,9 @@ export function withItilLabels<T extends Record<string, unknown>>(itemtype: stri
   if (urgency !== undefined) out.urgency_label = TICKET_URGENCY[urgency] ?? null;
   const priority = asNumber(obj.priority);
   if (priority !== undefined) out.priority_label = TICKET_PRIORITY[priority] ?? null;
+  // Approval state of the whole ticket or change (CommonITILValidation codes).
+  const validation = asNumber(obj.global_validation);
+  if (validation !== undefined) out.global_validation_label = VALIDATION_STATUS[validation] ?? null;
   return out as T;
 }
 
@@ -205,8 +212,11 @@ const ITIL_FIELDS = [
   'id', 'name', 'type', 'status', 'status_label', 'urgency', 'urgency_label', 'impact',
   'priority', 'priority_label', 'itilcategories_id', 'entities_id', 'date', 'date_mod',
   'solvedate', 'closedate', 'time_to_resolve', 'time_to_own', 'users_id_recipient',
-  'requesttypes_id', 'global_validation', 'actiontime', 'is_deleted', 'content',
+  'requesttypes_id', 'global_validation', 'global_validation_label', 'actiontime', 'is_deleted', 'content',
 ];
+/** A problem's analysis and a change's plans, after the description. */
+const PROBLEM_FIELDS = [...ITIL_FIELDS, 'impactcontent', 'causecontent', 'symptomcontent'];
+const CHANGE_FIELDS = [...ITIL_FIELDS, 'impactcontent', 'controlistcontent', 'rolloutplancontent', 'backoutplancontent', 'checklistcontent'];
 
 /** Fields kept by `compactItem` per itemtype (missing ones are skipped). */
 export const COMPACT_FIELDS: Record<string, readonly string[]> = {
@@ -221,8 +231,8 @@ export const COMPACT_FIELDS: Record<string, readonly string[]> = {
   PDU: ASSET_FIELDS,
   Software: ['id', 'name', 'entities_id', 'manufacturers_id', 'softwarecategories_id', 'is_deleted', 'date_mod', 'comment'],
   Ticket: ITIL_FIELDS,
-  Problem: ITIL_FIELDS,
-  Change: ITIL_FIELDS,
+  Problem: PROBLEM_FIELDS,
+  Change: CHANGE_FIELDS,
   KnowbaseItem: ['id', 'name', 'is_faq', 'knowbaseitemcategories_id', 'users_id', 'view', 'date_creation', 'date_mod', 'answer'],
   Contract: ['id', 'name', 'num', 'contracttypes_id', 'begin_date', 'duration', 'notice', 'periodicity', 'renewal', 'entities_id', 'is_deleted', 'comment'],
   Supplier: ['id', 'name', 'suppliertypes_id', 'address', 'postcode', 'town', 'country', 'website', 'phonenumber', 'email', 'entities_id', 'is_deleted', 'comment'],

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ArgumentError } from '../errors.js';
 import { compactItem, listEnvelope, text } from '../output.js';
 import { defineTool, type ToolDef } from './registry.js';
+import { readItilRelations } from './itil-relations.js';
 import {
   IMPACT_DESC,
   PRIORITY_DESC,
@@ -76,18 +77,19 @@ function itilTools(itemtype: 'Problem' | 'Change'): ToolDef[] {
     name: `glpi_get_${lower}`,
     title: `Get ${lower}`,
     toolset: 'itil',
-    description: `One ${lower} with labels, plain-text content and followup/task/solution counts.`,
+    description: `One ${lower}: labels, plain-text content, actors, links, counts.`,
     inputSchema: {
       id: id(),
       verbose,
       ...textShape,
     },
     handler: async ({ client }, a) => {
-      const [obj, counts] = await Promise.all([
+      const [obj, counts, relations] = await Promise.all([
         client.getItem(itemtype, a.id),
         client.countItilChildren(itemtype, a.id, itemtype === 'Change'),
+        readItilRelations(client, itemtype, a.id),
       ]);
-      return text({ ...compactItem(itemtype, obj, a), counts });
+      return text({ ...compactItem(itemtype, obj, a), ...relations, counts });
     },
   });
 

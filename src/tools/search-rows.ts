@@ -4,16 +4,24 @@
 
 import { ArgumentError } from '../errors.js';
 import type { GlpiClient } from '../glpi-client.js';
+import { VALIDATION_STATUS } from '../itil.js';
 import type { SearchResponse } from '../search.js';
 import { cleanTextFields, listEnvelope, type ListEnvelope, type TextOptions, withItilLabels } from '../output.js';
 
-/** Rows keep the readable keys from search.ts, plus ITIL labels and plain-text content. */
+/** TicketValidation / ChangeValidation rows: `status_label` next to the code (2 Waiting, 3 Accepted, 4 Refused). */
+function withValidationLabel(itemtype: string, row: Record<string, unknown>): Record<string, unknown> {
+  if (!/^(Ticket|Change)Validation$/.test(itemtype)) return row;
+  const status = Number(row.status);
+  return Number.isInteger(status) && VALIDATION_STATUS[status] ? { ...row, status_label: VALIDATION_STATUS[status] } : row;
+}
+
+/** Rows keep the readable keys from search.ts, plus ITIL and validation labels and plain-text content. */
 export function searchEnvelope(
   itemtype: string,
   result: SearchResponse<Record<string, unknown>>,
   opts: TextOptions = {}
 ): ListEnvelope<Record<string, unknown>> {
-  const items = result.data.map((row) => cleanTextFields(withItilLabels(itemtype, row), opts));
+  const items = result.data.map((row) => cleanTextFields(withValidationLabel(itemtype, withItilLabels(itemtype, row)), opts));
   return listEnvelope(items, result.start, result.totalcount);
 }
 

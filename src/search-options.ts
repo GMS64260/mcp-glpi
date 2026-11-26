@@ -20,6 +20,8 @@ export interface SearchOption {
   datatype?: string;
   uid?: string;
   available_searchtypes?: string[];
+  /** GLPI refuses this option as a displayed column (forcedisplay answers 400). */
+  nodisplay?: boolean;
   /** Raw entry from GLPI, kept only when GLPI_DEBUG is set (memory). */
   raw?: Record<string, unknown>;
 }
@@ -120,6 +122,7 @@ export class SearchOptionsCache {
         available_searchtypes: Array.isArray(entry.available_searchtypes)
           ? (entry.available_searchtypes as string[])
           : undefined,
+        ...(entry.nodisplay ? { nodisplay: true } : {}),
         ...(keepRaw ? { raw: entry } : {}),
       };
 
